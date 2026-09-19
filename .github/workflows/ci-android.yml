@@ -47,6 +47,10 @@ jobs:
 
       - name: Setup Android SDK
         uses: android-actions/setup-android@v3
+        with:
+          # Override v3's default: Google no longer serves the legacy "tools" package.
+          packages: 'platform-tools'
+          log-accepted-android-sdk-licenses: 'false'
 
       - name: Install project SDK and native build tools
         # Keep these versions in sync with android/app/build.gradle.kts.
