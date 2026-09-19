@@ -141,17 +141,20 @@ class AirPods4ANC: AirPodsBase(
     )
 )
 
+// Share only artwork with AirPods 4; capabilities stay model-specific.
+// Upstream AirPods 4 still uses placeholder artwork. Future artwork fixes are inherited.
+private val airPods4Artwork = AirPods4()
+
 // Initial AirPods 5 registration; AACP compatibility still needs hardware validation.
 // Only earbud model numbers belong here, not charging case identifiers.
 class AirPods5: AirPodsBase(
     modelNumber = listOf("A3531", "A3532", "A3533"),
     name = "AirPods 5",
-    // Reuse existing artwork until AirPods 5 assets are available.
-    budCaseRes = R.drawable.airpods_pro_2,
-    budsRes = R.drawable.airpods_pro_2_buds,
-    leftBudsRes = R.drawable.airpods_pro_2_left,
-    rightBudsRes = R.drawable.airpods_pro_2_right,
-    caseRes = R.drawable.airpods_pro_2_case,
+    budCaseRes = airPods4Artwork.budCaseRes,
+    budsRes = airPods4Artwork.budsRes,
+    leftBudsRes = airPods4Artwork.leftBudsRes,
+    rightBudsRes = airPods4Artwork.rightBudsRes,
+    caseRes = airPods4Artwork.caseRes,
     capabilities = setOf(
         Capability.LISTENING_MODE,
         Capability.CONVERSATION_AWARENESS,
@@ -165,12 +168,11 @@ class AirPods5: AirPodsBase(
 class AirPods5Wireless: AirPodsBase(
     modelNumber = listOf("A3439", "A3440", "A3441"),
     name = "AirPods 5 (Wireless Charging Case)",
-    // Reuse existing artwork until AirPods 5 assets are available.
-    budCaseRes = R.drawable.airpods_pro_2,
-    budsRes = R.drawable.airpods_pro_2_buds,
-    leftBudsRes = R.drawable.airpods_pro_2_left,
-    rightBudsRes = R.drawable.airpods_pro_2_right,
-    caseRes = R.drawable.airpods_pro_2_case,
+    budCaseRes = airPods4Artwork.budCaseRes,
+    budsRes = airPods4Artwork.budsRes,
+    leftBudsRes = airPods4Artwork.leftBudsRes,
+    rightBudsRes = airPods4Artwork.rightBudsRes,
+    caseRes = airPods4Artwork.caseRes,
     capabilities = setOf(
         Capability.LISTENING_MODE,
         Capability.CONVERSATION_AWARENESS,
