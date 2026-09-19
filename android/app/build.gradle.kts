@@ -44,7 +44,12 @@ android {
         }
     }
     namespace = "me.kavishdevar.librepods"
-    compileSdk = 37
+    // API 37 is published as platforms;android-37.0, including the minor version.
+    compileSdk {
+        version = release(37) {
+            minorApiLevel = 0
+        }
+    }
 
     defaultConfig {
         applicationId = "me.kavishdevar.librepods"
