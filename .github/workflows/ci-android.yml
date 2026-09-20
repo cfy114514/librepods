@@ -69,6 +69,31 @@ jobs:
           test -f "$ANDROID_HOME/ndk/30.0.14904198/source.properties"
           test -x "$ANDROID_HOME/cmake/3.22.1/bin/cmake"
 
+      - name: Prepare release signing
+        id: signing
+        shell: bash
+        env:
+          RELEASE_KEYSTORE_BASE64: ${{ secrets.RELEASE_KEYSTORE_BASE64 }}
+          RELEASE_STORE_PASSWORD: ${{ secrets.RELEASE_STORE_PASSWORD }}
+          RELEASE_KEY_ALIAS: ${{ secrets.RELEASE_KEY_ALIAS }}
+          RELEASE_KEY_PASSWORD: ${{ secrets.RELEASE_KEY_PASSWORD }}
+        run: |
+          set -euo pipefail
+          if [[ -z "${RELEASE_KEYSTORE_BASE64:-}" || -z "${RELEASE_STORE_PASSWORD:-}" || -z "${RELEASE_KEY_ALIAS:-}" || -z "${RELEASE_KEY_PASSWORD:-}" ]]; then
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Release signing secrets are not configured; skipping signed Release APK."
+            exit 0
+          fi
+          printf '%s' "$RELEASE_KEYSTORE_BASE64" | base64 --decode > "$RUNNER_TEMP/librepods-release.jks"
+          cat > android/local.properties <<EOF
+          sdk.dir=$ANDROID_HOME
+          RELEASE_STORE_FILE=$RUNNER_TEMP/librepods-release.jks
+          RELEASE_STORE_PASSWORD=$RELEASE_STORE_PASSWORD
+          RELEASE_KEY_ALIAS=$RELEASE_KEY_ALIAS
+          RELEASE_KEY_PASSWORD=$RELEASE_KEY_PASSWORD
+          EOF
+          echo "available=true" >> "$GITHUB_OUTPUT"
+
       - name: Build FOSS debug APK
         id: apk
         working-directory: android
@@ -79,6 +104,16 @@ jobs:
           mkdir -p build
           ./gradlew --no-daemon --stacktrace assembleFossDebug \
             2>&1 | tee build/ci-apk.log
+
+      - name: Build signed FOSS release APK
+        id: release
+        if: ${{ steps.signing.outputs.available == 'true' }}
+        working-directory: android
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon --stacktrace assembleFossRelease \
+            2>&1 | tee build/ci-release.log
 
       - name: Run JVM unit tests
         id: tests
@@ -109,6 +144,13 @@ jobs:
             sha256sum app-foss-debug.apk > SHA256SUMS
           fi
 
+      - name: Checksum release APK
+        if: ${{ !cancelled() && steps.release.outcome == 'success' }}
+        shell: bash
+        run: |
+          cd android/app/build/outputs/apk/foss/release
+          sha256sum *.apk > SHA256SUMS
+
       - name: Upload debug APK
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
@@ -118,6 +160,17 @@ jobs:
             android/app/build/outputs/apk/foss/debug/*.apk
             android/app/build/outputs/apk/foss/debug/SHA256SUMS
           if-no-files-found: warn
+          retention-days: 14
+
+      - name: Upload release APK
+        if: ${{ !cancelled() && steps.release.outcome == 'success' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: apk-foss-release-${{ github.run_id }}
+          path: |
+            android/app/build/outputs/apk/foss/release/*.apk
+            android/app/build/outputs/apk/foss/release/SHA256SUMS
+          if-no-files-found: error
           retention-days: 14
 
       - name: Upload test reports and diagnostics
@@ -145,6 +198,8 @@ jobs:
             echo '## LibrePods Android debug validation'
             echo "SDK installation: ${SDK_OUTCOME}"
             echo "APK build: ${APK_OUTCOME}"
+            echo "Release signing setup: ${SIGNING_OUTCOME}"
+            echo "Signed Release APK: ${RELEASE_OUTCOME}"
             echo "JVM unit tests: ${TEST_OUTCOME}"
             echo "Android Lint: ${LINT_OUTCOME}"
             echo "Checked-out commit: $(git rev-parse HEAD)"
