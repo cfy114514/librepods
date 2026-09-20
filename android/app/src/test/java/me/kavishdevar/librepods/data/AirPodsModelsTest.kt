@@ -10,6 +10,8 @@ import org.junit.Test
 
 class AirPodsModelsTest {
     private val commonCapabilities = setOf(
+        Capability.SLEEP_DETECTION,
+        Capability.CUSTOM_EQ,
         Capability.LISTENING_MODE,
         Capability.CONVERSATION_AWARENESS,
         Capability.HEAD_GESTURES,
@@ -83,7 +85,8 @@ class AirPodsModelsTest {
 
     @Test
     fun proOnlyCapabilitiesAreNotEnabledBySharingArtwork() {
-        val excluded = setOf(Capability.HRM, Capability.HEARING_AID, Capability.PPE)
+        val excluded = setOf(Capability.HRM, Capability.HEARING_AID, Capability.PPE,
+            Capability.LOUD_SOUND_REDUCTION, Capability.CUSTOM_TRANSPARENCY)
         for (model in listOf(AirPods5(), AirPods5Wireless())) {
             assertTrue(model.capabilities.intersect(excluded).isEmpty())
         }
@@ -100,6 +103,7 @@ class AirPodsModelsTest {
     }
 
     private fun assertSameArtwork(expected: AirPodsBase, actual: AirPodsBase) {
+        assertEquals(expected.connectionArtworkRes, actual.connectionArtworkRes)
         assertEquals(expected.budCaseRes, actual.budCaseRes)
         assertEquals(expected.budsRes, actual.budsRes)
         assertEquals(expected.leftBudsRes, actual.leftBudsRes)

@@ -30,7 +30,8 @@ open class AirPodsBase(
     val leftBudsRes: Int,
     val rightBudsRes: Int,
     val caseRes: Int,
-    val capabilities: Set<Capability>
+    val capabilities: Set<Capability>,
+    val connectionArtworkRes: Int? = null
 )
 enum class Capability {
     LISTENING_MODE,
@@ -44,6 +45,8 @@ enum class Capability {
     ADAPTIVE_AUDIO,
     ADAPTIVE_VOLUME,
     SWIPE_FOR_VOLUME,
+    CUSTOM_EQ,
+    CUSTOM_TRANSPARENCY,
     HRM
 }
 
@@ -100,17 +103,14 @@ class AirPods3: AirPodsBase(
 class AirPods4: AirPodsBase(
     modelNumber = listOf("A3053", "A3050", "A3054"),
     name = "AirPods 4",
-    // budCaseRes = R.drawable.airpods_4
-    budCaseRes = R.drawable.airpods_pro_2,
-    // budsRes = R.drawable.airpods_4_buds
-    budsRes = R.drawable.airpods_pro_2_buds,
-    // leftBudsRes = R.drawable.airpods_4_left
-    leftBudsRes = R.drawable.airpods_pro_2_left,
-    // rightBudsRes = R.drawable.airpods_4_right
-    rightBudsRes = R.drawable.airpods_pro_2_right,
-    // caseRes = R.drawable.airpods_4_case
-    caseRes = R.drawable.airpods_pro_2_case,
+    budCaseRes = R.drawable.airpods_4,
+    budsRes = R.drawable.airpods_4_buds,
+    leftBudsRes = R.drawable.airpods_4_left,
+    rightBudsRes = R.drawable.airpods_4_right,
+    caseRes = R.drawable.airpods_4_case,
+    connectionArtworkRes = R.drawable.airpods_4,
     capabilities = setOf(
+        Capability.CUSTOM_EQ,
         Capability.HEAD_GESTURES,
         Capability.SLEEP_DETECTION,
         Capability.ADAPTIVE_VOLUME
@@ -120,17 +120,14 @@ class AirPods4: AirPodsBase(
 class AirPods4ANC: AirPodsBase(
     modelNumber = listOf("A3056", "A3055", "A3057"),
     name = "AirPods 4 (ANC)",
-    // budCaseRes = R.drawable.airpods_4
-    budCaseRes = R.drawable.airpods_pro_2,
-    // budsRes = R.drawable.airpods_4_buds
-    budsRes = R.drawable.airpods_pro_2_buds,
-    // leftBudsRes = R.drawable.airpods_4_left
-    leftBudsRes = R.drawable.airpods_pro_2_left,
-    // rightBudsRes = R.drawable.airpods_4_right
-    rightBudsRes = R.drawable.airpods_pro_2_right,
-    // caseRes = R.drawable.airpods_4_case
-    caseRes = R.drawable.airpods_pro_2_case,
+    budCaseRes = R.drawable.airpods_4,
+    budsRes = R.drawable.airpods_4_buds,
+    leftBudsRes = R.drawable.airpods_4_left,
+    rightBudsRes = R.drawable.airpods_4_right,
+    caseRes = R.drawable.airpods_4_case,
+    connectionArtworkRes = R.drawable.airpods_4,
     capabilities = setOf(
+        Capability.CUSTOM_EQ,
         Capability.LISTENING_MODE,
         Capability.CONVERSATION_AWARENESS,
         Capability.HEAD_GESTURES,
@@ -142,20 +139,23 @@ class AirPods4ANC: AirPodsBase(
 )
 
 // Share only artwork with AirPods 4; capabilities stay model-specific.
-// Upstream AirPods 4 still uses placeholder artwork. Future artwork fixes are inherited.
+// The same artwork is used on the main screen and connection overlays.
 private val airPods4Artwork = AirPods4()
 
-// Initial AirPods 5 registration; AACP compatibility still needs hardware validation.
+// AirPods 5 capabilities follow docs/airpods-5.md; AACP controls need device validation.
 // Only earbud model numbers belong here, not charging case identifiers.
 class AirPods5: AirPodsBase(
     modelNumber = listOf("A3531", "A3532", "A3533"),
     name = "AirPods 5",
+    connectionArtworkRes = airPods4Artwork.connectionArtworkRes,
     budCaseRes = airPods4Artwork.budCaseRes,
     budsRes = airPods4Artwork.budsRes,
     leftBudsRes = airPods4Artwork.leftBudsRes,
     rightBudsRes = airPods4Artwork.rightBudsRes,
     caseRes = airPods4Artwork.caseRes,
     capabilities = setOf(
+        Capability.SLEEP_DETECTION,
+        Capability.CUSTOM_EQ,
         Capability.LISTENING_MODE,
         Capability.CONVERSATION_AWARENESS,
         Capability.HEAD_GESTURES,
@@ -168,12 +168,15 @@ class AirPods5: AirPodsBase(
 class AirPods5Wireless: AirPodsBase(
     modelNumber = listOf("A3439", "A3440", "A3441"),
     name = "AirPods 5 (Wireless Charging Case)",
+    connectionArtworkRes = airPods4Artwork.connectionArtworkRes,
     budCaseRes = airPods4Artwork.budCaseRes,
     budsRes = airPods4Artwork.budsRes,
     leftBudsRes = airPods4Artwork.leftBudsRes,
     rightBudsRes = airPods4Artwork.rightBudsRes,
     caseRes = airPods4Artwork.caseRes,
     capabilities = setOf(
+        Capability.SLEEP_DETECTION,
+        Capability.CUSTOM_EQ,
         Capability.LISTENING_MODE,
         Capability.CONVERSATION_AWARENESS,
         Capability.HEAD_GESTURES,
@@ -199,6 +202,7 @@ class AirPodsPro1: AirPodsBase(
     // caseRes = R.drawable.airpods_pro_1_case
     caseRes = R.drawable.airpods_pro_2_case,
     capabilities = setOf(
+        Capability.CUSTOM_TRANSPARENCY,
         Capability.LISTENING_MODE
     )
 )
@@ -218,6 +222,8 @@ class AirPodsPro2Lightning: AirPodsBase(
     // caseRes = R.drawable.airpods_pro_2_case
     caseRes = R.drawable.airpods_pro_2_case,
     capabilities = setOf(
+        Capability.CUSTOM_TRANSPARENCY,
+        Capability.CUSTOM_EQ,
         Capability.LISTENING_MODE,
         Capability.CONVERSATION_AWARENESS,
         Capability.STEM_CONFIG,
@@ -246,6 +252,8 @@ class AirPodsPro2USBC: AirPodsBase(
     // caseRes = R.drawable.airpods_pro_2_case
     caseRes = R.drawable.airpods_pro_2_case,
     capabilities = setOf(
+        Capability.CUSTOM_TRANSPARENCY,
+        Capability.CUSTOM_EQ,
         Capability.LISTENING_MODE,
         Capability.CONVERSATION_AWARENESS,
         Capability.STEM_CONFIG,
@@ -274,6 +282,8 @@ class AirPodsPro3: AirPodsBase(
     // caseRes = R.drawable.airpods_pro_3_case
     caseRes = R.drawable.airpods_pro_2_case,
     capabilities = setOf(
+        Capability.CUSTOM_TRANSPARENCY,
+        Capability.CUSTOM_EQ,
         Capability.LISTENING_MODE,
         Capability.CONVERSATION_AWARENESS,
         Capability.HEAD_GESTURES,
