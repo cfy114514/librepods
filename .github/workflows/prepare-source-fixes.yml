@@ -1,0 +1,117 @@
+name: Prepare reviewed Android source fixes
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/prepare-source-fixes.yml']
+permissions:
+  contents: write
+jobs:
+  prepare:
+    if: github.repository == 'cfy114514/librepods' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - name: Apply exact, hash-checked source edits
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          from pathlib import Path
+          import hashlib
+          import json
+          import subprocess
+
+          out = Path('/tmp/librepods-reviewed-fixes')
+          out.mkdir()
+          base = Path('android/app/src/main/java/me/kavishdevar/librepods')
+
+          def load(path, expected):
+              raw = path.read_bytes()
+              actual = hashlib.sha1(b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()
+              if actual != expected:
+                  raise SystemExit(f'Source changed: {path}: {actual}')
+              return raw.decode('utf-8')
+
+          def replace(text, old, new, count=1):
+              if text.count(old) != count:
+                  raise SystemExit(f'Expected {count} occurrences of {old!r}')
+              return text.replace(old, new)
+
+          service = base / 'services/AirPodsService.kt'
+          text = load(service, '0cf08c11d2b18b70e5b02d135035319934973f97')
+          text = replace(text,
+              'sendBroadcast(Intent(AirPodsNotifications.AIRPODS_L2CAP_CONNECTED))',
+              'sendBroadcast(Intent(AirPodsNotifications.AIRPODS_L2CAP_CONNECTED).apply {\n'
+              '                            setPackage(packageName)\n'
+              '                        })')
+          text = replace(text,
+              '                device?.disconnect()\n',
+              '                val currentDevice = device\n'
+              '                if (currentDevice != null) {\n'
+              '                    if (Build.VERSION.SDK_INT >= 37) {\n'
+              '                        currentDevice.disconnect()\n'
+              '                    } else {\n'
+              '                        // Older privileged builds may expose this as a hidden API.\n'
+              '                        // Reflection is best-effort; failures are handled below.\n'
+              '                        BluetoothDevice::class.java.getMethod("disconnect").invoke(currentDevice)\n'
+              '                    }\n'
+              '                }\n')
+          service.write_text(text, encoding='utf-8')
+
+          ble = base / 'bluetooth/BLEManager.kt'
+          text = load(ble, '52fa055124501160e686c5feebd01c31c0b10300')
+          start = text.index('    private val modelNames = mapOf(\n')
+          end = text.index('\n    )\n', start) + len('\n    )\n')
+          old_map = text[start:end]
+          if old_map.count(' to ') != 10:
+              raise SystemExit('Unexpected model table')
+          text = replace(text, old_map, '')
+          text = replace(text,
+              '        val modelId = ((data[3].toInt() and 0xFF) shl 8) or (data[4].toInt() and 0xFF)\n'
+              '        val model = modelNames[modelId] ?: "Unknown ($modelId)"',
+              '        val model = AirPodsProximityModels.getModelName(data)', 2)
+          text = replace(text,
+              '            if (manufacturerData.size <= 20) return',
+              '            if (!AirPodsProximityModels.isValid(manufacturerData)) return')
+          ble.write_text(text, encoding='utf-8')
+
+          paths = [service, ble]
+          records = []
+          for index, path in enumerate(paths):
+              raw = path.read_bytes()
+              (out / f'blob-{index}.json').write_text(json.dumps({
+                  'content': raw.decode('utf-8'), 'encoding': 'utf-8'
+              }), encoding='utf-8')
+              records.append({'path': str(path), 'sha': hashlib.sha1(
+                  b'blob ' + str(len(raw)).encode() + b'\0' + raw).hexdigest()})
+              target = out / path
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_bytes(raw)
+          (out / 'manifest.json').write_text(json.dumps(records, indent=2) + '\n')
+          subprocess.run(['git', 'diff', '--check'], check=True)
+          (out / 'source-fixes.patch').write_bytes(subprocess.check_output(['git', 'diff', '--', *map(str, paths)]))
+          print((out / 'manifest.json').read_text())
+          print((out / 'source-fixes.patch').read_text())
+          PY
+      - name: Store blobs without updating any branch
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          for index in 0 1; do
+            sha=$(gh api "repos/${GITHUB_REPOSITORY}/git/blobs" \
+              --input "/tmp/librepods-reviewed-fixes/blob-${index}.json" --jq '.sha')
+            echo "Stored blob ${index}: ${sha}"
+            python3 -c 'import json,sys; assert json.load(open("/tmp/librepods-reviewed-fixes/manifest.json"))[int(sys.argv[1])]["sha"] == sys.argv[2]' "$index" "$sha"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reviewed-source-fixes
+          path: /tmp/librepods-reviewed-fixes/
+          if-no-files-found: error
+          retention-days: 2
