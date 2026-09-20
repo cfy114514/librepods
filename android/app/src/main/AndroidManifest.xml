@@ -144,6 +144,10 @@
             </intent-filter>
         </receiver>
 
+        <receiver
+            android:name=".utils.SleepTimerReceiver"
+            android:exported="false" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.provider"

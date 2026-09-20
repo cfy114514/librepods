@@ -25,22 +25,25 @@ import android.content.Context
 import android.content.Intent
 import kotlin.io.encoding.ExperimentalEncodingApi
 import me.kavishdevar.librepods.services.AirPodsService
+import me.kavishdevar.librepods.utils.SleepTimerManager
 
 class BootReceiver: BroadcastReceiver() {
     override fun onReceive(context: Context?, intent: Intent?) {
+        val appContext = context ?: return
         when (intent?.action) {
-            Intent.ACTION_MY_PACKAGE_REPLACED -> try { context?.startForegroundService(
+            Intent.ACTION_MY_PACKAGE_REPLACED -> try { appContext.startForegroundService(
                 Intent(
-                    context,
+                    appContext,
                     AirPodsService::class.java
                 )
             ) } catch (e: Exception) { e.printStackTrace() }
-            Intent.ACTION_BOOT_COMPLETED -> try { context?.startForegroundService(
+            Intent.ACTION_BOOT_COMPLETED -> try { appContext.startForegroundService(
                 Intent(
-                    context,
+                    appContext,
                     AirPodsService::class.java
                 )
             ) } catch (e: Exception) { e.printStackTrace() }
         }
+        SleepTimerManager.restore(appContext)
     }
 }

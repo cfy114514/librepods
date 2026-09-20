@@ -109,6 +109,7 @@ import me.kavishdevar.librepods.presentation.widgets.NoiseControlWidget
 import me.kavishdevar.librepods.utils.GestureDetector
 import me.kavishdevar.librepods.utils.HeadTracking
 import me.kavishdevar.librepods.utils.MediaController
+import me.kavishdevar.librepods.utils.SleepTimerManager
 import me.kavishdevar.librepods.utils.SystemApisUtils
 import me.kavishdevar.librepods.utils.SystemApisUtils.DEVICE_TYPE_UNTETHERED_HEADSET
 import me.kavishdevar.librepods.utils.SystemApisUtils.METADATA_COMPANION_APP
@@ -539,10 +540,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     if (intent.hasExtra("mode")) {
                         val mode = intent.getIntExtra("mode", -1)
                         if (mode in 1..4) {
-                            aacpManager.sendControlCommand(
-                                AACPManager.Companion.ControlCommandIdentifiers.LISTENING_MODE.value,
-                                mode
-                            )
+                            setListeningMode(mode)
                         }
                     } else {
                         val currentMode = ancNotification.status
@@ -2444,6 +2442,10 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         Log.d(TAG, "Service started with intent action: ${intent?.action}")
 
+        if (intent?.action == SleepTimerManager.ACTION_APPLY_MODE) {
+            setListeningMode(intent.getIntExtra("mode", -1))
+        }
+
         if (intent?.action == "me.kavishdevar.librepods.RECONNECT_AFTER_REVERSE") {
             Log.d(TAG, "reconnect after reversed received, taking over")
             disconnectedBecauseReversed = false
@@ -2452,6 +2454,15 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         }
 
         return START_STICKY
+    }
+
+    fun setListeningMode(mode: Int) {
+        if (mode in 1..4) {
+            aacpManager.sendControlCommand(
+                AACPManager.Companion.ControlCommandIdentifiers.LISTENING_MODE.value,
+                mode
+            )
+        }
     }
 
     @RequiresApi(Build.VERSION_CODES.R)

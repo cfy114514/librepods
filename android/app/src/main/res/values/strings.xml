@@ -222,6 +222,16 @@
     <string name="battery">Battery</string>
     <string name="battery_description">View accurate battery status in the app and notification.</string>
     <string name="noise_control_description">Switch between listening modes directly from the app or Quick Settings.</string>
+    <string name="sleep_timer">Sleep Timer</string>
+    <string name="sleep_timer_description">Keep the current mode and switch to a selected mode after a set time.</string>
+    <string name="sleep_timer_current_mode">Current mode: %1$s (unchanged)</string>
+    <string name="sleep_timer_choose_mode">Mode after the timer:</string>
+    <string name="sleep_timer_duration">Duration</string>
+    <string name="minutes_short">min</string>
+    <string name="start_timer">Start timer</string>
+    <string name="sleep_timer_active_minutes">Switches to %1$s in %2$d min</string>
+    <string name="sleep_timer_active_hours">Switches to %1$s in %2$dh %3$d min</string>
+    <string name="cancel_sleep_timer">Cancel timer</string>
     <string name="advanced_device_settings">Advanced device settings</string>
     <string name="advanced_device_settings_description">Customize settings like Personalized Volume, Adaptive Audio, Pause media when falling asleep, and other Accessibility settings.</string>
     <string name="automatic_connection">Automatic Connection</string>

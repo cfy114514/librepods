@@ -113,6 +113,7 @@ import me.kavishdevar.librepods.presentation.components.HearingHealthSettings
 import me.kavishdevar.librepods.presentation.components.MaterialButtonStyle
 import me.kavishdevar.librepods.presentation.components.NoiseControlSettings
 import me.kavishdevar.librepods.presentation.components.PressAndHoldSettings
+import me.kavishdevar.librepods.presentation.components.SleepTimerSettings
 import me.kavishdevar.librepods.presentation.components.StyledButton
 import me.kavishdevar.librepods.presentation.components.StyledListItem
 import me.kavishdevar.librepods.presentation.components.StyledToggle
@@ -122,6 +123,7 @@ import me.kavishdevar.librepods.presentation.theme.LocalDesignSystem
 import me.kavishdevar.librepods.presentation.viewmodel.AirPodsUiState
 import me.kavishdevar.librepods.presentation.viewmodel.AirPodsViewModel
 import me.kavishdevar.librepods.presentation.viewmodel.demoState
+import me.kavishdevar.librepods.utils.SleepTimerManager
 import java.util.concurrent.TimeUnit
 import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.math.min
@@ -239,7 +241,8 @@ fun AirPodsSettingsScreen(
         activateDemoMode: () -> Unit,
         reconnectFromSavedMac: () -> Unit,
 ) {
-    val sharedPreferences = LocalContext.current.getSharedPreferences("settings", MODE_PRIVATE)
+    val context = LocalContext.current
+    val sharedPreferences = context.getSharedPreferences("settings", MODE_PRIVATE)
     var deviceName by remember {
         mutableStateOf(
             TextFieldValue(
@@ -367,6 +370,19 @@ fun AirPodsSettingsScreen(
                                 AACPManager.Companion.ControlCommandIdentifiers.LISTENING_MODE, it
                             )
                         },
+                    )
+                }
+                item(key = "sleep_timer") {
+                    SleepTimerSettings(
+                        endAt = SleepTimerManager.endAt(context),
+                        currentMode = state.controlStates[
+                            AACPManager.Companion.ControlCommandIdentifiers.LISTENING_MODE
+                        ]?.getOrNull(0)?.toInt() ?: 1,
+                        targetMode = SleepTimerManager.targetMode(context),
+                        onStartTimer = { minutes, targetMode ->
+                            SleepTimerManager.start(context, minutes, targetMode)
+                        },
+                        onCancelTimer = { SleepTimerManager.cancel(context) }
                     )
                 }
             }
