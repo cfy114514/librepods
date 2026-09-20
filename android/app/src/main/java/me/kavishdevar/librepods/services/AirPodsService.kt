@@ -2709,7 +2709,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                                 )
                             }
                         }
-                        sendBroadcast(Intent(AirPodsNotifications.AIRPODS_L2CAP_CONNECTED))
+                        sendBroadcast(Intent(AirPodsNotifications.AIRPODS_L2CAP_CONNECTED).apply {
+                            setPackage(packageName)
+                        })
                     } catch (e: Exception) {
 //                        sharedPreferences.edit { putBoolean("connection_successful", false) }
                         Log.d(
@@ -2906,7 +2908,16 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 override fun onServiceDisconnected(profile: Int) {}
             }, BluetoothProfile.A2DP)
             try {
-                device?.disconnect()
+                val currentDevice = device
+                if (currentDevice != null) {
+                    if (Build.VERSION.SDK_INT >= 37) {
+                        currentDevice.disconnect()
+                    } else {
+                        // Older privileged builds may expose this as a hidden API.
+                        // Reflection is best-effort; failures are handled below.
+                        BluetoothDevice::class.java.getMethod("disconnect").invoke(currentDevice)
+                    }
+                }
             } catch (e: Exception) {
                 Log.w(TAG, "device.disconnect() failed, $e")
             }

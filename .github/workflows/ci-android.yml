@@ -69,16 +69,36 @@ jobs:
           test -f "$ANDROID_HOME/ndk/30.0.14904198/source.properties"
           test -x "$ANDROID_HOME/cmake/3.22.1/bin/cmake"
 
-      - name: Test, build debug APK, and run lint
-        id: verify
+      - name: Build FOSS debug APK
+        id: apk
         working-directory: android
         shell: bash
         run: |
+          set -euo pipefail
           chmod +x gradlew
           mkdir -p build
-          ./gradlew --no-daemon --stacktrace --continue \
-            testFossDebugUnitTest assembleFossDebug lintFossDebug \
-            2>&1 | tee build/ci-gradle.log
+          ./gradlew --no-daemon --stacktrace assembleFossDebug \
+            2>&1 | tee build/ci-apk.log
+
+      - name: Run JVM unit tests
+        id: tests
+        if: ${{ !cancelled() && steps.apk.outcome == 'success' }}
+        working-directory: android
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon --stacktrace testFossDebugUnitTest \
+            2>&1 | tee build/ci-tests.log
+
+      - name: Run Android Lint
+        id: lint
+        if: ${{ !cancelled() && steps.apk.outcome == 'success' }}
+        working-directory: android
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon --stacktrace lintFossDebug \
+            2>&1 | tee build/ci-lint.log
 
       - name: Checksum debug APK
         if: ${{ !cancelled() }}
@@ -116,15 +136,20 @@ jobs:
         if: ${{ !cancelled() }}
         env:
           SDK_OUTCOME: ${{ steps.sdk.outcome }}
-          VERIFY_OUTCOME: ${{ steps.verify.outcome }}
+          APK_OUTCOME: ${{ steps.apk.outcome }}
+          TEST_OUTCOME: ${{ steps.tests.outcome }}
+          LINT_OUTCOME: ${{ steps.lint.outcome }}
         shell: bash
         run: |
           {
             echo '## LibrePods Android debug validation'
-            echo "SDK installation step: ${SDK_OUTCOME}"
-            echo "Build/test/lint step: ${VERIFY_OUTCOME}"
+            echo "SDK installation: ${SDK_OUTCOME}"
+            echo "APK build: ${APK_OUTCOME}"
+            echo "JVM unit tests: ${TEST_OUTCOME}"
+            echo "Android Lint: ${LINT_OUTCOME}"
             echo "Checked-out commit: $(git rev-parse HEAD)"
-            echo 'Artifacts, when produced: debug APK with SHA-256, unit test reports, lint reports, SDK installation logs, and Gradle log.'
+            echo 'All three verification steps are required; no errors are ignored.'
+            echo 'Artifacts, when produced: debug APK with SHA-256, unit test reports, lint reports, SDK installation logs, and Gradle logs.'
             echo 'No release signing keys are used. No release or Discord notification is published.'
             echo 'CI does not validate AirPods 5 Bluetooth behavior on real hardware.'
           } >> "$GITHUB_STEP_SUMMARY"

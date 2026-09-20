@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<lint>
+    <!-- These layouts use framework ImageViews/ImageButtons, not AppCompat widgets.
+         App-widget RemoteViews are inflated by the launcher; the island is inflated
+         with the service's framework LayoutInflater. Keep android:tint so the tint
+         is actually applied. Do not suppress NewApi or UnsafeImplicitIntentLaunch. -->
+    <issue id="UseAppTint">
+        <ignore path="src/main/res/layout/battery_widget.xml" />
+        <ignore path="src/main/res/layout/noise_control_widget.xml" />
+        <ignore path="src/main/res/layout/island_window.xml" />
+    </issue>
+</lint>
