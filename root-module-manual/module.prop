@@ -1,6 +1,6 @@
 id=librepods
 name=LibrePods
-version=v1.0.0-airpods5.1
-versionCode=64
+version=v1.0.0-airpods5.2
+versionCode=65
 author=@kavishdevar, fork release @cfy114514
 description=Installs LibrePods as a system app for granting BLUETOOTH_PRIVILEGED and MODIFY_PHONE_STATE permission for better integraion with android.

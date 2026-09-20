@@ -1,6 +1,6 @@
 import java.util.Properties
 
-val appVersionName = "1.0.0-airpods5.1"
+val appVersionName = "1.0.0-airpods5.2"
 
 plugins {
     alias(libs.plugins.android.application)
@@ -54,13 +54,16 @@ android {
     defaultConfig {
         applicationId = "me.kavishdevar.librepods"
         targetSdk = 37
-        versionCode = 64
+        versionCode = 65
         versionName = appVersionName
     }
     buildTypes {
         release {
-            isMinifyEnabled = true
-            isShrinkResources = true
+            // This APK is also loaded as an Xposed module. Its entrypoint, JNI
+            // bridge, reflection hooks, and android.resource URIs cross process
+            // boundaries, so shrinking must not change the runtime surface.
+            isMinifyEnabled = false
+            isShrinkResources = false
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro"
             )
