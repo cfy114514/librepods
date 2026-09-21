@@ -7,6 +7,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.SheetValue
 import androidx.compose.material3.rememberModalBottomSheetState
@@ -31,6 +32,7 @@ fun StyledBottomSheet(
     visible: Boolean,
     onDismiss: () -> Unit,
     backdrop: LayerBackdrop,
+    opaque: Boolean = false,
     content: @Composable (innerBackdrop: LayerBackdrop, progress: Float) -> Unit
 ) {
     if (!visible) return
@@ -46,16 +48,22 @@ fun StyledBottomSheet(
     )
 
     val animatedCorner = lerp(48.dp, 42.dp, progress)
+    val surfaceColor = MaterialTheme.colorScheme.surface
+    val scrimColor = if (opaque) {
+        MaterialTheme.colorScheme.onBackground.copy(alpha = 0.18f)
+    } else {
+        Color.Transparent
+    }
 
-    ModalBottomSheet(
-        onDismissRequest = onDismiss,
-        sheetState = sheetState,
-        containerColor = Color.Transparent,
-        dragHandle = { },
-        shape = RoundedCornerShape(animatedCorner),
-        scrimColor = Color.Transparent,
-        modifier = Modifier.padding(4.dp)
-    ) {
+        ModalBottomSheet(
+            onDismissRequest = onDismiss,
+            sheetState = sheetState,
+            containerColor = if (opaque) surfaceColor else Color.Transparent,
+            dragHandle = { },
+            shape = RoundedCornerShape(animatedCorner),
+            scrimColor = scrimColor,
+            modifier = Modifier.padding(4.dp)
+        ) {
         val innerBackdrop = rememberLayerBackdrop()
         Box(
             modifier = Modifier
@@ -69,14 +77,18 @@ fun StyledBottomSheet(
                         vibrancy()
                         blur(4f.dp.toPx())
                         lens(12f.dp.toPx(), 48f.dp.toPx(), true)
-                    },
-                    onDrawSurface = {
-                        drawRect(
-                            if (isDarkTheme) Color.DarkGray.copy(alpha = 0.3f) else Color(
-                                0xFFE0E0E0
-                            ).copy(alpha = 0.45f)
-                        )
-                    }
+                        },
+                        onDrawSurface = {
+                            drawRect(
+                                if (opaque) {
+                                    surfaceColor
+                                } else if (isDarkTheme) {
+                                    Color.DarkGray.copy(alpha = 0.3f)
+                                } else {
+                                    Color(0xFFE0E0E0).copy(alpha = 0.45f)
+                                }
+                            )
+                        }
                 )
                 .padding(top = 24.dp)
                 .padding(horizontal = 16.dp)

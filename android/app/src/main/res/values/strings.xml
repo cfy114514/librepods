@@ -223,7 +223,8 @@
     <string name="battery_description">View accurate battery status in the app and notification.</string>
     <string name="noise_control_description">Switch between listening modes directly from the app or Quick Settings.</string>
     <string name="sleep_timer">Sleep Timer</string>
-    <string name="sleep_timer_description">Keep the current mode and switch to a selected mode after a set time.</string>
+    <string name="sleep_timer_description">Set a duration and the mode to switch to.</string>
+    <string name="sleep_timer_not_set">Not set</string>
     <string name="sleep_timer_current_mode">Current mode: %1$s (unchanged)</string>
     <string name="sleep_timer_choose_mode">Mode after the timer:</string>
     <string name="sleep_timer_duration">Duration</string>

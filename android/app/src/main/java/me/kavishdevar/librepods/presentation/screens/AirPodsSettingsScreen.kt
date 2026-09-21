@@ -276,19 +276,6 @@ fun AirPodsSettingsScreen(
                 .padding(horizontal = 16.dp)
         ) {
             item(key = "top_padding") { Spacer(modifier = Modifier.height(topPadding)) }
-            item(key = "sleep_timer") {
-                SleepTimerSettings(
-                    endAt = SleepTimerManager.endAt(context),
-                    currentMode = state.controlStates[
-                        AACPManager.Companion.ControlCommandIdentifiers.LISTENING_MODE
-                    ]?.getOrNull(0)?.toInt() ?: 1,
-                    targetMode = SleepTimerManager.targetMode(context),
-                    onStartTimer = { minutes, targetMode ->
-                        SleepTimerManager.start(context, minutes, targetMode)
-                    },
-                    onCancelTimer = { SleepTimerManager.cancel(context) }
-                )
-            }
             item(key = "play_update_banner") {
                 if (state.timeUntilFOSSPremiumExpiry > 0L) {
                     val context = LocalContext.current
@@ -576,6 +563,21 @@ fun AirPodsSettingsScreen(
             item(key = "accessibility") {
                 StyledListItem(
                     name = stringResource(R.string.accessibility), onClick = navigateToAccessibility
+                )
+            }
+
+            item(key = "spacer_sleep_timer") { Spacer(modifier = Modifier.height(16.dp)) }
+            item(key = "sleep_timer") {
+                SleepTimerSettings(
+                    endAt = SleepTimerManager.endAt(context),
+                    currentMode = state.controlStates[
+                        AACPManager.Companion.ControlCommandIdentifiers.LISTENING_MODE
+                    ]?.getOrNull(0)?.toInt() ?: 1,
+                    targetMode = SleepTimerManager.targetMode(context),
+                    onStartTimer = { minutes, targetMode ->
+                        SleepTimerManager.start(context, minutes, targetMode)
+                    },
+                    onCancelTimer = { SleepTimerManager.cancel(context) }
                 )
             }
 

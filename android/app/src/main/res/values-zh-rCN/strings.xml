@@ -195,6 +195,17 @@
     <string name="troubleshooting_steps">故障排除步骤</string>
     <string name="hearing_test_value_instruction">请输入 dbHL 中的损失值</string>
     <string name="about">关于</string>
+    <string name="sleep_timer">睡眠定时器</string>
+    <string name="sleep_timer_description">设置时长和结束时切换的模式。</string>
+    <string name="sleep_timer_not_set">未设置</string>
+    <string name="sleep_timer_current_mode">当前模式：%1$s（保持不变）</string>
+    <string name="sleep_timer_choose_mode">结束时切换到</string>
+    <string name="sleep_timer_duration">时长</string>
+    <string name="minutes_short">分钟</string>
+    <string name="start_timer">开始定时</string>
+    <string name="sleep_timer_active_minutes">%2$d 分钟后切换到%1$s</string>
+    <string name="sleep_timer_active_hours">%2$d 小时 %3$d 分钟后切换到%1$s</string>
+    <string name="cancel_sleep_timer">取消定时</string>
     <string name="model_name">型号名称</string>
     <string name="model_number">型号编号</string>
     <string name="serial_number">序列号</string>
