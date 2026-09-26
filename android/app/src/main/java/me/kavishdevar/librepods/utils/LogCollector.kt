@@ -20,13 +20,19 @@ package me.kavishdevar.librepods.utils
 
 import android.content.Context
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.awaitCancellation
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
-import java.io.BufferedReader
 import java.io.File
-import java.io.InputStreamReader
 
 class LogCollector(private val context: Context) {
-    private var isCollecting = false
+    private val collectionLock = Any()
+    @Volatile private var activeCollection: Any? = null
     private var logProcess: Process? = null
 
     suspend fun openXposedSettings(context: Context) {
@@ -59,7 +65,7 @@ class LogCollector(private val context: Context) {
             val uid = executeRootCommand(
                 "dumpsys package $pkg | grep -m 1 \"uid=\" | sed -E 's/.*uid=([0-9]+).*/\\1/'"
             ).trim()
-            if (uid.isNotEmpty()) return uid
+            if (uid.isNotEmpty() && uid.all(Char::isDigit)) return uid
         }
         return null
     }
@@ -69,109 +75,95 @@ class LogCollector(private val context: Context) {
             val btUid = getBluetoothUID()
             val appUid = executeRootCommand("dumpsys package me.kavishdevar.librepods | grep -m 1 \"uid=\" | sed -E 's/.*uid=([0-9]+).*/\\1/'")
                 .trim()
-                .takeIf { it.isNotEmpty() }
+                .takeIf { it.isNotEmpty() && it.all(Char::isDigit) }
 
             Pair(btUid, appUid)
         }
     }
 
-    suspend fun startLogCollection(listener: (String) -> Unit, connectionDetectedCallback: () -> Unit): String {
+    suspend fun startLogCollection(fileName: String, connectionDetectedCallback: () -> Unit): File {
         return withContext(Dispatchers.IO) {
-            isCollecting = true
-            val (btUid, appUid) = getPackageUIDs()
-
-            val uidFilter = buildString {
-                if (!btUid.isNullOrEmpty() && !appUid.isNullOrEmpty()) {
-                    append("$btUid,$appUid")
-                } else if (!btUid.isNullOrEmpty()) {
-                    append(btUid)
-                } else if (!appUid.isNullOrEmpty()) {
-                    append(appUid)
-                }
+            val session = Any()
+            synchronized(collectionLock) {
+                check(activeCollection == null) { "Log collection is already running" }
+                activeCollection = session
             }
-
-            val command = if (uidFilter.isNotEmpty()) {
-                "su -c logcat --uid=$uidFilter -v threadtime"
-            } else {
-                "su -c logcat -v threadtime"
-            }
-
-            val logs = StringBuilder()
+            var process: Process? = null
             try {
-                logProcess = Runtime.getRuntime().exec(command)
-                val reader = BufferedReader(InputStreamReader(logProcess!!.inputStream))
-                var line: String? = null
-                var connectionDetected = false
+                val (btUid, appUid) = getPackageUIDs()
 
-                while (isCollecting && reader.readLine().also { line = it } != null) {
-                    line?.let {
-                        if (it.contains("<LogCollector:")) {
-                            logs.append("\n=============\n")
+                val uidFilter = buildString {
+                    if (!btUid.isNullOrEmpty() && !appUid.isNullOrEmpty()) {
+                        append("$btUid,$appUid")
+                    } else if (!btUid.isNullOrEmpty()) {
+                        append(btUid)
+                    } else if (!appUid.isNullOrEmpty()) {
+                        append(appUid)
+                    }
+                }
+
+                val command = if (uidFilter.isNotEmpty()) {
+                    "logcat --uid=$uidFilter -v threadtime"
+                } else {
+                    "logcat -v threadtime"
+                }
+
+                val logsDir = File(context.filesDir, "logs")
+                check(logsDir.isDirectory || logsDir.mkdirs()) { "Cannot create log directory" }
+                // A stopped reader may still be finishing as a new session starts.
+                // Never let two sessions truncate or write the same log file.
+                val file = File.createTempFile(fileName.removeSuffix(".txt") + "_", ".txt", logsDir)
+                file.bufferedWriter().use { output ->
+                    if (activeCollection === session) {
+                        val startedProcess = ProcessBuilder("su", "-c", command)
+                            .redirectErrorStream(true).start()
+                        process = startedProcess
+                        synchronized(collectionLock) {
+                            if (activeCollection === session) logProcess = startedProcess
+                            else startedProcess.destroy()
                         }
-
-                        logs.append(it).append("\n")
-                        listener(it)
-
-                        if (it.contains("<LogCollector:")) {
-                            logs.append("=============\n\n")
+                        // Cancellation must close the pipe even while readLine() is blocked.
+                        val cancellationWatcher = launch(Dispatchers.IO, start = CoroutineStart.UNDISPATCHED) {
+                            try {
+                                awaitCancellation()
+                            } finally {
+                                startedProcess.destroy()
+                            }
                         }
-
-                        if (!connectionDetected) {
-                            if (it.contains("<LogCollector:Complete:Success>")) {
-                                connectionDetected = true
-                                connectionDetectedCallback()
-                            } else if (it.contains("<LogCollector:Complete:Failed>")) {
-                                connectionDetected = true
-                                connectionDetectedCallback()
-                            } else if (it.contains("<LogCollector:Start>")) {
+                        try {
+                            startedProcess.inputStream.bufferedReader().use { reader ->
+                                streamDiagnosticLog(reader, output, { activeCollection === session }, connectionDetectedCallback)
                             }
-                            else if (it.contains("AirPodsService") && it.contains("Connected to device")) {
-                                connectionDetected = true
-                                connectionDetectedCallback()
-                            } else if (it.contains("AirPodsService") && it.contains("Connection failed")) {
-                                connectionDetected = true
-                                connectionDetectedCallback()
-                            } else if (it.contains("AirPodsService") && it.contains("Device disconnected")) {
-                            }
-                            else if (it.contains("BluetoothService") && it.contains("CONNECTION_STATE_CONNECTED")) {
-                                connectionDetected = true
-                                connectionDetectedCallback()
-                            } else if (it.contains("BluetoothService") && it.contains("CONNECTION_STATE_DISCONNECTED")) {
-                            }
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (e: Exception) {
+                            currentCoroutineContext().ensureActive()
+                            if (activeCollection === session) output.append("Error collecting logs: ${e.message}\n")
+                        } finally {
+                            cancellationWatcher.cancel()
+                            startedProcess.destroy()
                         }
                     }
                 }
-            } catch (e: Exception) {
-                logs.append("Error collecting logs: ${e.message}").append("\n")
-                e.printStackTrace()
+                file
+            } finally {
+                process?.destroy()
+                synchronized(collectionLock) {
+                    if (activeCollection === session) {
+                        activeCollection = null
+                        logProcess = null
+                    }
+                }
             }
-
-            logs.toString()
         }
     }
 
     fun stopLogCollection() {
-        isCollecting = false
-        logProcess?.destroy()
-        logProcess = null
-    }
-
-    suspend fun saveLogToInternalStorage(fileName: String, content: String): File? {
-        return withContext(Dispatchers.IO) {
-            try {
-                val logsDir = File(context.filesDir, "logs")
-                if (!logsDir.exists()) {
-                    logsDir.mkdir()
-                }
-
-                val file = File(logsDir, fileName)
-                file.writeText(content)
-                return@withContext file
-            } catch (e: Exception) {
-                e.printStackTrace()
-                return@withContext null
-            }
+        val process = synchronized(collectionLock) {
+            activeCollection = null
+            logProcess.also { logProcess = null }
         }
+        process?.destroy()
     }
 
     suspend fun addLogMarker(markerType: LogMarkerType, details: String = "") {
@@ -200,21 +192,25 @@ class LogCollector(private val context: Context) {
 
     private suspend fun executeRootCommand(command: String): String {
         return withContext(Dispatchers.IO) {
+            var process: Process? = null
             try {
-                val process = Runtime.getRuntime().exec("su -c $command")
-                val reader = BufferedReader(InputStreamReader(process.inputStream))
-                val output = StringBuilder()
-                var line: String?
-
-                while (reader.readLine().also { line = it } != null) {
-                    output.append(line).append("\n")
+                val startedProcess = ProcessBuilder("su", "-c", command).redirectErrorStream(true).start()
+                process = startedProcess
+                val deadline = launch(Dispatchers.IO, start = CoroutineStart.UNDISPATCHED) {
+                    try { delay(15_000) } finally { startedProcess.destroy() }
                 }
-
-                process.waitFor()
-                output.toString()
+                try {
+                    startedProcess.inputStream.bufferedReader().use { it.readText() }
+                } finally {
+                    deadline.cancel()
+                }
+            } catch (e: CancellationException) {
+                throw e
             } catch (e: Exception) {
                 e.printStackTrace()
                 ""
+            } finally {
+                process?.destroy()
             }
         }
     }

@@ -68,9 +68,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
 import me.kavishdevar.librepods.R
+import me.kavishdevar.librepods.bluetooth.ATTHandles
 import me.kavishdevar.librepods.data.TransparencySettings
 import me.kavishdevar.librepods.data.parseTransparencySettingsResponse
-import me.kavishdevar.librepods.data.sendTransparencySettings
+import me.kavishdevar.librepods.data.encodeTransparencySettings
 import me.kavishdevar.librepods.presentation.components.StyledSlider
 import me.kavishdevar.librepods.presentation.components.StyledToggle
 import me.kavishdevar.librepods.presentation.theme.DesignSystem
@@ -131,37 +132,13 @@ fun TransparencySettingsScreen(viewModel: AirPodsViewModel) {
 
         val initialized = rememberSaveable { mutableStateOf(false) }
 
-        val transparencySettings = remember {
-            mutableStateOf(
-                TransparencySettings(
-                    enabled = enabled.value,
-                    leftEQ = eq.value,
-                    rightEQ = eq.value,
-                    leftAmplification = amplificationSliderValue.floatValue + (0.5f - balanceSliderValue.floatValue) * amplificationSliderValue.floatValue * 2,
-                    rightAmplification = amplificationSliderValue.floatValue + (balanceSliderValue.floatValue - 0.5f) * amplificationSliderValue.floatValue * 2,
-                    leftTone = toneSliderValue.floatValue,
-                    rightTone = toneSliderValue.floatValue,
-                    leftConversationBoost = conversationBoostEnabled.value,
-                    rightConversationBoost = conversationBoostEnabled.value,
-                    leftAmbientNoiseReduction = ambientNoiseReductionSliderValue.floatValue,
-                    rightAmbientNoiseReduction = ambientNoiseReductionSliderValue.floatValue,
-                    netAmplification = amplificationSliderValue.floatValue,
-                    balance = balanceSliderValue.floatValue
-                )
-            )
+        val editor = rememberDeviceSettingsEditor<TransparencySettings> { settings ->
+            viewModel.setATTCharacteristicValue(ATTHandles.TRANSPARENCY, encodeTransparencySettings(settings))
         }
 
-        LaunchedEffect(
-            enabled.value,
-            amplificationSliderValue.floatValue,
-            balanceSliderValue.floatValue,
-            toneSliderValue.floatValue,
-            conversationBoostEnabled.value,
-            ambientNoiseReductionSliderValue.floatValue,
-            eq.value
-        ) {
-            if (!initialized.value) return@LaunchedEffect
-            transparencySettings.value = TransparencySettings(
+        fun sendUserEdit() {
+            if (!initialized.value) return
+            val settings = TransparencySettings(
                 enabled = enabled.value,
                 leftEQ = eq.value,
                 rightEQ = eq.value,
@@ -176,24 +153,25 @@ fun TransparencySettingsScreen(viewModel: AirPodsViewModel) {
                 netAmplification = amplificationSliderValue.floatValue,
                 balance = balanceSliderValue.floatValue
             )
-            Log.d("TransparencySettings", "Updated settings: ${transparencySettings.value}")
-            sendTransparencySettings(viewModel::setATTCharacteristicValue, transparencySettings.value)
+            editor.userEdited(settings)
         }
 
         LaunchedEffect(state.transparencyData) {
             val parsedSettings = parseTransparencySettingsResponse(data = state.transparencyData) ?: return@LaunchedEffect
-            Log.d(TAG, "Initial transparency settings: $parsedSettings")
-            enabled.value = parsedSettings.enabled
-            amplificationSliderValue.floatValue = parsedSettings.netAmplification
-            balanceSliderValue.floatValue = parsedSettings.balance
-            toneSliderValue.floatValue = parsedSettings.leftTone
-            ambientNoiseReductionSliderValue.floatValue =
-                parsedSettings.leftAmbientNoiseReduction
-            conversationBoostEnabled.value = parsedSettings.leftConversationBoost
-            if (!eq.value.contentEquals(parsedSettings.leftEQ)) {
-                eq.value = parsedSettings.leftEQ.copyOf()
+            editor.applyDeviceUpdate {
+                Log.d(TAG, "Initial transparency settings: $parsedSettings")
+                enabled.value = parsedSettings.enabled
+                amplificationSliderValue.floatValue = parsedSettings.netAmplification
+                balanceSliderValue.floatValue = parsedSettings.balance
+                toneSliderValue.floatValue = parsedSettings.leftTone
+                ambientNoiseReductionSliderValue.floatValue =
+                    parsedSettings.leftAmbientNoiseReduction
+                conversationBoostEnabled.value = parsedSettings.leftConversationBoost
+                if (!eq.value.contentEquals(parsedSettings.leftEQ)) {
+                    eq.value = parsedSettings.leftEQ.copyOf()
+                }
+                initialized.value = true
             }
-            initialized.value = true
         }
 
         if (state.vendorIdHook) {
@@ -201,7 +179,10 @@ fun TransparencySettingsScreen(viewModel: AirPodsViewModel) {
                 label = stringResource(R.string.transparency_mode),
                 checked = enabled.value,
                 description = stringResource(R.string.customize_transparency_mode_description),
-                onCheckedChange = { enabled.value = it }
+                onCheckedChange = {
+                    enabled.value = it
+                    sendUserEdit()
+                }
             )
             Spacer(modifier = Modifier.height(4.dp))
             StyledSlider(
@@ -210,6 +191,7 @@ fun TransparencySettingsScreen(viewModel: AirPodsViewModel) {
                 value = amplificationSliderValue.floatValue,
                 onValueChange = {
                     amplificationSliderValue.floatValue = it
+                    sendUserEdit()
                 },
                 startIcon = "􀊥",
                 endIcon = "􀊩",
@@ -222,6 +204,7 @@ fun TransparencySettingsScreen(viewModel: AirPodsViewModel) {
                 value = balanceSliderValue.floatValue,
                 onValueChange = {
                     balanceSliderValue.floatValue = it
+                    sendUserEdit()
                 },
                 snapPoints = listOf(-1f, 0f, 1f),
                 startLabel = stringResource(R.string.left),
@@ -235,6 +218,7 @@ fun TransparencySettingsScreen(viewModel: AirPodsViewModel) {
                 value = toneSliderValue.floatValue,
                 onValueChange = {
                     toneSliderValue.floatValue = it
+                    sendUserEdit()
                 },
                 startLabel = stringResource(R.string.darker),
                 endLabel = stringResource(R.string.brighter),
@@ -247,6 +231,7 @@ fun TransparencySettingsScreen(viewModel: AirPodsViewModel) {
                 value = ambientNoiseReductionSliderValue.floatValue,
                 onValueChange = {
                     ambientNoiseReductionSliderValue.floatValue = it
+                    sendUserEdit()
                 },
                 startLabel = stringResource(R.string.less),
                 endLabel = stringResource(R.string.more),
@@ -257,7 +242,10 @@ fun TransparencySettingsScreen(viewModel: AirPodsViewModel) {
                 label = stringResource(R.string.conversation_boost),
                 checked = conversationBoostEnabled.value,
                 description = stringResource(R.string.conversation_boost_description),
-                onCheckedChange = { conversationBoostEnabled.value = it }
+                onCheckedChange = {
+                    conversationBoostEnabled.value = it
+                    sendUserEdit()
+                }
             )
 
             Text(
@@ -302,6 +290,7 @@ fun TransparencySettingsScreen(viewModel: AirPodsViewModel) {
                                 val newEQ = eq.value.copyOf()
                                 newEQ[i] = eqValue.floatValue
                                 eq.value = newEQ
+                                sendUserEdit()
                             },
                             valueRange = 0f..100f,
                             modifier = Modifier

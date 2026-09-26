@@ -18,11 +18,8 @@
 
 package me.kavishdevar.librepods.bluetooth
 
+import android.bluetooth.BluetoothSocket
 import android.util.Log
-import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.LinkedBlockingQueue
-import java.util.concurrent.TimeUnit
-import java.util.concurrent.atomic.AtomicBoolean
 
 private const val TAG = "ATTManager"
 
@@ -41,33 +38,62 @@ enum class ATTCCCDHandles(val value: Int) {
 class ATTManagerv2 {
     val characteristicList = mutableMapOf<ATTHandles, ByteArray>()
 
-    private val responseQueues = ConcurrentHashMap<Byte, LinkedBlockingQueue<ByteArray>>()
+    private val requestLock = Any()
+    private val readerLock = Any()
 
-    private val readerRunning = AtomicBoolean(false)
-    private var readerThread: Thread? = null
+    private class ReaderSession(val socket: BluetoothSocket) {
+        val responses = AttResponseMailbox()
+        var thread: Thread? = null
+    }
+
+    @Volatile
+    private var activeReader: ReaderSession? = null
 
     private var onNotificationReceived: ((handle: Byte, value: ByteArray) -> Unit)? = null
 
     fun startReader() {
-        if (readerRunning.getAndSet(true)) return
-
-        readerThread = Thread {
-            try {
-                runReaderLoop()
-            } catch (t: Throwable) {
-                Log.e(TAG, "reader thread crashed: ${t.message}", t)
-            } finally {
-                readerRunning.set(false)
-                Log.d(TAG, "reader thread stopped")
-            }
-        }.also { it.name = "ATT-Reader"; it.isDaemon = true; it.start() }
-        Log.d(TAG, "reader started")
+        synchronized(readerLock) {
+            val socket = BluetoothConnectionManager.attSocket ?: return
+            if (activeReader?.socket === socket) return
+            // A reconnect can install the next socket before the old blocking
+            // reader has exited. Retire that reader before starting this one.
+            if (activeReader != null) stopReader()
+            val session = ReaderSession(socket)
+            activeReader = session
+            session.thread = Thread {
+                try {
+                    runReaderLoop(session)
+                } catch (t: Throwable) {
+                    Log.e(TAG, "reader thread crashed: ${t.message}", t)
+                } finally {
+                    synchronized(readerLock) {
+                        if (activeReader === session) activeReader = null
+                        // EOF and read failures release requests too. An old reader
+                        // only clears its own mailbox when a new session has started.
+                        session.responses.clear()
+                    }
+                    Log.d(TAG, "reader thread stopped")
+                }
+            }.also { it.name = "ATT-Reader"; it.isDaemon = true; it.start() }
+            Log.d(TAG, "reader started")
+        }
     }
 
     fun stopReader() {
-        readerRunning.set(false)
-        readerThread?.interrupt()
-        readerThread = null
+        val session = synchronized(readerLock) {
+            val reader = activeReader ?: return
+            activeReader = null
+            reader.responses.clear()
+            reader
+        }
+        session.thread?.interrupt()
+        // Bluetooth reads may not respond to interruption; closing this session's
+        // socket unblocks them without touching a subsequently connected socket.
+        try {
+            session.socket.close()
+        } catch (e: Exception) {
+            Log.w(TAG, "error closing reader socket: ${e.message}")
+        }
     }
 
     fun setOnNotificationReceived(listener: ((handle: Byte, value: ByteArray) -> Unit)?) {
@@ -86,17 +112,9 @@ class ATTManagerv2 {
     }
 
     fun readCharacteristic(handle: ATTHandles, timeoutMillis: Long = 2000): ByteArray? {
-        val socket = BluetoothConnectionManager.attSocket ?: return null
         try {
-            val output = socket.outputStream
             val pdu = byteArrayOf(0x0A, handle.value.toByte(), 0x00)
-            synchronized(output) {
-                output.write(pdu)
-                output.flush()
-            }
-            Log.d(TAG, "sending read request: ${pdu.joinToString(" ") { String.format("%02X", it) }}")
-
-            val resp = waitForResponse(0x0B, timeoutMillis) ?: run {
+            val resp = sendRequest(pdu, 0x0B, timeoutMillis) ?: run {
                 Log.e(TAG, "Timeout waiting for Read Response (0x0B) for handle ${handle.value}")
                 return null
             }
@@ -117,17 +135,9 @@ class ATTManagerv2 {
     }
 
     fun writeCharacteristic(handle: Byte, data: ByteArray, timeoutMillis: Long = 2000) {
-        val socket = BluetoothConnectionManager.attSocket ?: return
         try {
-            val output = socket.outputStream
             val pdu = byteArrayOf(0x12, handle, 0x00) + data // 0x00 for LE
-            synchronized(output) {
-                output.write(pdu)
-                output.flush()
-            }
-            Log.d(TAG, "sending write request: ${pdu.joinToString(" ") { String.format("%02X", it) }}")
-
-            val resp = waitForResponse(0x13, timeoutMillis) ?: run {
+            val resp = sendRequest(pdu, 0x13, timeoutMillis) ?: run {
                 Log.e(TAG, "timeout waiting for response (0x13) for handle ${String.format("%02X", handle)}")
                 return
             }
@@ -140,41 +150,35 @@ class ATTManagerv2 {
 
     fun disconnected() {
         characteristicList.clear()
+        val socket = BluetoothConnectionManager.attSocket
         stopReader()
-        val socket = BluetoothConnectionManager.attSocket?: return
         try {
-            socket.close()
+            socket?.close()
         } catch (e: Exception) {
             Log.w(TAG, "error closing socket: ${e.message}")
         }
         Log.d(TAG, "ATT disconnected")
     }
 
-    private fun runReaderLoop() {
-        val socket = BluetoothConnectionManager.attSocket ?: run {
-            Log.w(TAG, "ATT socket not available. stopping reader")
-            readerRunning.set(false)
-            return
-        }
-
-        val input = socket.inputStream
+    private fun runReaderLoop(session: ReaderSession) {
+        val input = session.socket.inputStream
         val buffer = ByteArray(512)
 
-        while (readerRunning.get()) {
+        while (activeReader === session) {
             try {
                 val len = input.read(buffer)
                 if (len == -1) {
                     Log.w(TAG, "ATT input stream ended")
                     break
                 }
+                if (activeReader !== session) break
                 val data = buffer.copyOfRange(0, len)
                 if (data.isEmpty()) continue
 
                 val opcode = data[0]
                 Log.d(TAG, "pdu received ${data.joinToString(" ") { String.format("%02X", it) }}")
 
-                val queue = responseQueues.computeIfAbsent(opcode) { LinkedBlockingQueue() }
-                queue.offer(data)
+                session.responses.offer(data)
 
                 if (opcode == 0x1B.toByte()) {
                     if (data.size >= 3) {
@@ -195,17 +199,29 @@ class ATTManagerv2 {
                 break
             }
         }
-
-        readerRunning.set(false)
     }
 
-    private fun waitForResponse(opcode: Byte, timeoutMillis: Long): ByteArray? {
-        val queue = responseQueues.computeIfAbsent(opcode) { LinkedBlockingQueue() }
-        return try {
-            queue.poll(timeoutMillis, TimeUnit.MILLISECONDS)
-        } catch (e: Exception) {
-            e.printStackTrace()
-            null
+    private fun sendRequest(pdu: ByteArray, responseOpcode: Byte, timeoutMillis: Long): ByteArray? =
+        synchronized(requestLock) {
+            val request = synchronized(readerLock) register@{
+                val session = activeReader ?: return@register null
+                // Register before writing: a fast reply may arrive before await() starts.
+                session to session.responses.expect(responseOpcode)
+            } ?: return@synchronized null
+            val (session, pending) = request
+            try {
+                val output = session.socket.outputStream
+                synchronized(output) {
+                    output.write(pdu)
+                    output.flush()
+                }
+                Log.d(TAG, "sending request: ${pdu.joinToString(" ") { String.format("%02X", it) }}")
+                pending.await(timeoutMillis)
+            } catch (e: InterruptedException) {
+                Thread.currentThread().interrupt()
+                null
+            } finally {
+                session.responses.finish(pending)
+            }
         }
-    }
 }

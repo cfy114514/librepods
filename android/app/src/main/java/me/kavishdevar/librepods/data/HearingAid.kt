@@ -152,41 +152,31 @@ fun sendHearingAidSettings(
                 Log.w(TAG, "Current data size ${currentData.size} too small, cannot send settings")
                 return@launch
             }
-            val buffer = ByteBuffer.wrap(currentData).order(ByteOrder.LITTLE_ENDIAN)
-
-            // for some reason
-            buffer.put(2, 0x64)
-
-            // Left EQ
-            for (i in 0..7) {
-                buffer.putFloat(4 + i * 4, hearingAidSettings.leftEQ[i])
-            }
-
-            // Left ear adjustments
-            buffer.putFloat(36, hearingAidSettings.leftAmplification)
-            buffer.putFloat(40, hearingAidSettings.leftTone)
-            buffer.putFloat(44, if (hearingAidSettings.leftConversationBoost) 1.0f else 0.0f)
-            buffer.putFloat(48, hearingAidSettings.leftAmbientNoiseReduction)
-
-            // Right EQ
-            for (i in 0..7) {
-                buffer.putFloat(52 + i * 4, hearingAidSettings.rightEQ[i])
-            }
-
-            // Right ear adjustments
-            buffer.putFloat(84, hearingAidSettings.rightAmplification)
-            buffer.putFloat(88, hearingAidSettings.rightTone)
-            buffer.putFloat(92, if (hearingAidSettings.rightConversationBoost) 1.0f else 0.0f)
-            buffer.putFloat(96, hearingAidSettings.rightAmbientNoiseReduction)
-
-            // Own voice amplification
-            buffer.putFloat(100, hearingAidSettings.ownVoiceAmplification)
-
-            Log.d(TAG, "Sending updated settings: ${currentData.joinToString(" ") { String.format("%02X", it) }}")
-
-            sender(ATTHandles.HEARING_AID, currentData)
+            val data = encodeHearingAidSettings(currentData, hearingAidSettings) ?: return@launch
+            Log.d(TAG, "Sending updated settings: ${data.joinToString(" ") { String.format("%02X", it) }}")
+            sender(ATTHandles.HEARING_AID, data)
         } catch (e: IOException) {
             e.printStackTrace()
         }
     }
+}
+
+/** Preserve the device header and any trailing fields without mutating its cached state. */
+fun encodeHearingAidSettings(currentData: ByteArray, settings: HearingAidSettings): ByteArray? {
+    if (currentData.size < 104) return null
+    val data = currentData.copyOf()
+    val buffer = ByteBuffer.wrap(data).order(ByteOrder.LITTLE_ENDIAN)
+    buffer.put(2, 0x64)
+    for (i in 0..7) buffer.putFloat(4 + i * 4, settings.leftEQ[i])
+    buffer.putFloat(36, settings.leftAmplification)
+    buffer.putFloat(40, settings.leftTone)
+    buffer.putFloat(44, if (settings.leftConversationBoost) 1f else 0f)
+    buffer.putFloat(48, settings.leftAmbientNoiseReduction)
+    for (i in 0..7) buffer.putFloat(52 + i * 4, settings.rightEQ[i])
+    buffer.putFloat(84, settings.rightAmplification)
+    buffer.putFloat(88, settings.rightTone)
+    buffer.putFloat(92, if (settings.rightConversationBoost) 1f else 0f)
+    buffer.putFloat(96, settings.rightAmbientNoiseReduction)
+    buffer.putFloat(100, settings.ownVoiceAmplification)
+    return data
 }
