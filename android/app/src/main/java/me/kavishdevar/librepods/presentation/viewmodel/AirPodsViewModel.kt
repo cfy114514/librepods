@@ -18,6 +18,7 @@
 
 package me.kavishdevar.librepods.presentation.viewmodel
 
+import android.bluetooth.BluetoothSocket
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
@@ -32,10 +33,14 @@ import androidx.core.content.edit
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runInterruptible
 import me.kavishdevar.librepods.BuildConfig
 import me.kavishdevar.librepods.billing.BillingManager
 import me.kavishdevar.librepods.bluetooth.AACPManager
@@ -198,6 +203,18 @@ class AirPodsViewModel(
         private set
 
     fun init(service: AirPodsService, controlRepo: ControlCommandRepository, sharedPreferences: SharedPreferences, appContext: Context) {
+        // The Activity can reconnect or be recreated while this ViewModel survives.
+        // Keep one set of observers for a service, and release the old set on replacement.
+        if (isReady && this.service === service) {
+            if (!isDemoMode) {
+                loadCurrentStatus()
+                loadATT()
+                enableATTNotifications()
+                loadEq()
+            }
+            return
+        }
+        clearObservers()
         this.service = service
         this.controlRepo = controlRepo
         this.sharedPreferences = sharedPreferences
@@ -229,7 +246,13 @@ class AirPodsViewModel(
 
     private val xposedRemotePref = XposedRemotePrefProvider.create()
 
-    private lateinit var broadcastReceiver: BroadcastReceiver
+    private var broadcastReceiver: BroadcastReceiver? = null
+    private var preferenceListener: SharedPreferences.OnSharedPreferenceChangeListener? = null
+    private var billingJob: Job? = null
+    private var attLoadJob: Job? = null
+    private var attLoadSocket: BluetoothSocket? = null
+    private var attNotificationJob: Job? = null
+    @Volatile private var attNotificationSocket: BluetoothSocket? = null
 
 //    private val _cameraAction = MutableStateFlow(
 //        sharedPreferences.getString("camera_action", null)
@@ -268,11 +291,27 @@ class AirPodsViewModel(
     }
 
     override fun onCleared() {
+        clearObservers()
+        super.onCleared()
+    }
+
+    private fun clearObservers() {
+        billingJob?.cancel()
+        billingJob = null
+        clearATTJobs()
         listeners.forEach { (id, listener) ->
             controlRepo.remove(id, listener)
         }
-        service.aacpManager.customEqCallback = null
-        appContext.unregisterReceiver(broadcastReceiver)
+        listeners.clear()
+        if (::service.isInitialized) {
+            service.aacpManager.customEqCallback = null
+            service.attManager.setOnNotificationReceived(null)
+        }
+        preferenceListener?.let { sharedPreferences.unregisterOnSharedPreferenceChangeListener(it) }
+        preferenceListener = null
+        broadcastReceiver?.let { appContext.unregisterReceiver(it) }
+        broadcastReceiver = null
+        isReady = false
     }
 
     private fun loadName() {
@@ -282,7 +321,8 @@ class AirPodsViewModel(
 
     private fun observeBilling() {
         if (isDemoMode) return
-        viewModelScope.launch {
+        billingJob?.cancel()
+        billingJob = viewModelScope.launch {
             BillingManager.provider.isPremium.collect { premium ->
                 if (premium) {
                     sharedPreferences.edit {
@@ -305,6 +345,7 @@ class AirPodsViewModel(
     }
 
     private fun observeSharedPreferences() {
+        preferenceListener?.let { sharedPreferences.unregisterOnSharedPreferenceChangeListener(it) }
         val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
             when (key) {
                 "name" -> loadName()
@@ -313,6 +354,7 @@ class AirPodsViewModel(
                 "dynamic_end_of_charge", "foss_upgraded", "premium_expiry_time" -> loadSharedPreferences()
             }
         }
+        preferenceListener = listener
         sharedPreferences.registerOnSharedPreferenceChangeListener(listener)
     }
 
@@ -325,9 +367,15 @@ class AirPodsViewModel(
                         _uiState.update {
                             it.copy(isLocallyConnected = true)
                         }
+                        loadATT()
+                        enableATTNotifications()
                     }
 
                     AirPodsNotifications.AIRPODS_DISCONNECTED -> {
+                        // A queued disconnect from the previous transport must not
+                        // cancel observers already attached to its replacement.
+                        if (BluetoothConnectionManager.aacpSocket?.isConnected == true) return
+                        clearATTJobs()
                         _uiState.update {
                             it.copy(isLocallyConnected = false)
                         }
@@ -399,6 +447,7 @@ class AirPodsViewModel(
     }
 
     fun observeControl(identifier: ControlCommandIdentifiers) {
+        if (identifier in listeners) return
         val listener = controlRepo.observe(identifier) { value ->
             _uiState.update { state ->
                 val current = state.controlStates[identifier]
@@ -655,27 +704,81 @@ class AirPodsViewModel(
     }
 
     fun loadATT() {
-        val loudSoundReduction = service.attManager.getCharacteristic(ATTHandles.LOUD_SOUND_REDUCTION) ?: byteArrayOf()
-        val loudSoundReductionEnabled = if (loudSoundReduction.isNotEmpty()) {
-            loudSoundReduction[0].toInt() == 1
-        } else false
-        val hearingAidData = service.attManager.getCharacteristic(ATTHandles.HEARING_AID) ?: byteArrayOf()
-        val transparencyData = service.attManager.getCharacteristic(ATTHandles.TRANSPARENCY) ?: byteArrayOf()
-        _uiState.update {
-            it.copy(
-                loudSoundReductionEnabled = loudSoundReductionEnabled,
-                transparencyData = transparencyData,
-                hearingAidData = hearingAidData
-            )
+        if (isDemoMode) return
+        val socket = BluetoothConnectionManager.attSocket?.takeIf { it.isConnected } ?: return
+        if (attLoadSocket === socket && attLoadJob?.isActive == true) return
+        attLoadJob?.cancel()
+        attLoadSocket = socket
+        val currentService = service
+        val attManager = currentService.attManager
+        attLoadJob = viewModelScope.launch {
+            val jobContext = currentCoroutineContext()
+            val values = runInterruptible(Dispatchers.IO) {
+                // Cache misses perform blocking ATT requests. Cancellation interrupts
+                // the wait, and each subsequent request still belongs to this socket.
+                fun read(handle: ATTHandles): ByteArray? {
+                    jobContext.ensureActive()
+                    if (service !== currentService || BluetoothConnectionManager.attSocket !== socket) return null
+                    return attManager.getCharacteristic(handle)
+                }
+                Triple(
+                    read(ATTHandles.LOUD_SOUND_REDUCTION),
+                    read(ATTHandles.HEARING_AID),
+                    read(ATTHandles.TRANSPARENCY)
+                )
+            }
+            if (service !== currentService || BluetoothConnectionManager.attSocket !== socket ||
+                !socket.isConnected || isDemoMode
+            ) return@launch
+            _uiState.update {
+                it.copy(
+                    loudSoundReductionEnabled = values.first?.firstOrNull() == 0x01.toByte(),
+                    hearingAidData = values.second ?: byteArrayOf(),
+                    transparencyData = values.third ?: byteArrayOf()
+                )
+            }
+        }
+    }
+
+    private fun clearATTJobs() {
+        attLoadJob?.cancel()
+        attLoadJob = null
+        attLoadSocket = null
+        attNotificationJob?.cancel()
+        attNotificationJob = null
+        attNotificationSocket = null
+    }
+
+    private fun enableATTNotifications() {
+        if (isDemoMode) return
+        val socket = BluetoothConnectionManager.attSocket?.takeIf { it.isConnected } ?: return
+        if (attNotificationSocket === socket) return
+        attNotificationJob?.cancel()
+        attNotificationSocket = socket
+        val currentService = service
+        val attManager = currentService.attManager
+        attNotificationJob = viewModelScope.launch {
+            val jobContext = currentCoroutineContext()
+            runInterruptible(Dispatchers.IO) {
+                for (handle in listOf(ATTCCCDHandles.HEARING_AID, ATTCCCDHandles.TRANSPARENCY)) {
+                    jobContext.ensureActive()
+                    if (service !== currentService || BluetoothConnectionManager.attSocket !== socket || !socket.isConnected) {
+                        return@runInterruptible
+                    }
+                    attManager.enableNotification(handle)
+                }
+            }
         }
     }
 
     fun observeATT() {
-        viewModelScope.launch(Dispatchers.IO) {
-            service.attManager.enableNotification(ATTCCCDHandles.HEARING_AID)
-            service.attManager.enableNotification(ATTCCCDHandles.TRANSPARENCY)
-        }
-        service.attManager.setOnNotificationReceived { handle, value ->
+        val currentService = service
+        val attManager = service.attManager
+        attManager.setOnNotificationReceived { handle, value ->
+            val socket = attNotificationSocket
+            if (service !== currentService || socket == null ||
+                BluetoothConnectionManager.attSocket !== socket || !socket.isConnected || isDemoMode
+            ) return@setOnNotificationReceived
             when (handle) {
                 ATTHandles.LOUD_SOUND_REDUCTION.value.toByte() -> {
                     val loudSoundReductionEnabled = if (value.isNotEmpty()) {
@@ -697,6 +800,7 @@ class AirPodsViewModel(
                 }
             }
         }
+        enableATTNotifications()
     }
 
     fun setAutomaticEarDetectionEnabled(enabled: Boolean) {

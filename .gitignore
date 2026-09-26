@@ -654,3 +654,18 @@ obj/
 
 # End of https://www.toptal.com/developers/gitignore/api/qt,c++,clion,kotlin,python,android,pycharm,androidstudio,visualstudiocode,linux
 linux/.qmlls.ini
+phone-main-after-opaque-install.png
+phone-main-after-reconnect.png
+phone-main-after-relaunch.png
+phone-main-after-ui.png
+phone-main-before.png
+phone-main-bottom-1.png
+phone-main-bottom-2.png
+phone-main-bottom-after-ui.png
+phone-main-bottom-opaque-2.png
+phone-main-bottom-opaque.png
+phone-main-bottom.png
+phone-timer-current.png
+phone-timer-opaque.png
+docs/performance-audit-2026-09-26.md
+release-test-35523018608/SHA256SUMS

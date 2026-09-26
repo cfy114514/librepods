@@ -48,10 +48,8 @@ import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.BlendMode
 import androidx.compose.ui.graphics.BlurEffect
 import androidx.compose.ui.graphics.Color
-import androidx.compose.ui.graphics.Paint
 import androidx.compose.ui.graphics.TileMode
 import androidx.compose.ui.graphics.drawOutline
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.graphicsLayer
@@ -227,20 +225,11 @@ fun StyledSwitch(
                         scaleY = scale
                     },
                     onDrawBackdrop = { drawScope ->
-                        drawIntoCanvas { canvas ->
-                            canvas.save()
-                            canvas.drawRect(
-                                left = 0f,
-                                top = 0f,
-                                right = size.width,
-                                bottom = size.height,
-                                paint = Paint().apply {
-                                    color = if (isDarkTheme) Color(0xFF1C1C1E) else Color(0xFFF2F2F7)
-                                }
-                            )
-                            scale(0.7f) {
-                                drawScope()
-                            }
+                        drawRect(
+                            color = if (isDarkTheme) Color(0xFF1C1C1E) else Color(0xFFF2F2F7)
+                        )
+                        scale(0.7f) {
+                            drawScope()
                         }
                     },
                     onDrawSurface = {

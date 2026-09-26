@@ -23,10 +23,8 @@ package me.kavishdevar.librepods.utils
 import android.content.Context
 import android.media.AudioAttributes
 import android.media.SoundPool
-import android.os.Build
 import android.os.SystemClock
 import android.util.Log
-import androidx.annotation.RequiresApi
 import me.kavishdevar.librepods.R
 import java.util.concurrent.atomic.AtomicBoolean
 
@@ -35,6 +33,8 @@ class GestureFeedback(context: Context) {
     private val TAG = "GestureFeedback"
 
     private val soundsLoaded = AtomicBoolean(false)
+    private var released = false
+    private val loadedSoundIds = mutableSetOf<Int>()
 
     private val soundPool = SoundPool.Builder()
         .setMaxStreams(3)
@@ -72,21 +72,25 @@ class GestureFeedback(context: Context) {
     private val VERTICAL_VOLUME = Pair(1.0f, 1.0f)
 
     init {
+        soundPool.setOnLoadCompleteListener { _, sampleId, status ->
+            synchronized(this) {
+                if (!released && status == 0) {
+                    loadedSoundIds.add(sampleId)
+                    if (loadedSoundIds.size == 3 && soundsLoaded.compareAndSet(false, true)) {
+                        Log.d(TAG, "Sounds loaded")
+                        soundPool.play(soundId, 0.0f, 0.0f, 1, 0, 1.0f)
+                    }
+                }
+            }
+        }
         soundId = soundPool.load(context, R.raw.blip_no, 1)
         confirmYesId = soundPool.load(context, R.raw.confirm_yes, 1)
         confirmNoId = soundPool.load(context, R.raw.confirm_no, 1)
-
-        soundPool.setOnLoadCompleteListener { _, _, _ ->
-            Log.d(TAG, "Sounds loaded")
-            soundsLoaded.set(true)
-
-            soundPool.play(soundId, 0.0f, 0.0f, 1, 0, 1.0f)
-        }
     }
 
-    @RequiresApi(Build.VERSION_CODES.R)
+    @Synchronized
     fun playDirectional(isVertical: Boolean, value: Double) {
-        if (!soundsLoaded.get()) {
+        if (released || !soundsLoaded.get()) {
             Log.d(TAG, "Sounds not yet loaded, skipping playback")
             return
         }
@@ -162,18 +166,40 @@ class GestureFeedback(context: Context) {
         }
     }
 
-    fun playConfirmation(isYes: Boolean) {
+    @Synchronized
+    fun stopDirectional() {
+        if (released) return
         if (currentHorizontalStreamId > 0) {
             soundPool.stop(currentHorizontalStreamId)
+            currentHorizontalStreamId = 0
         }
         if (currentVerticalStreamId > 0) {
             soundPool.stop(currentVerticalStreamId)
+            currentVerticalStreamId = 0
         }
+    }
+
+    @Synchronized
+    fun playConfirmation(isYes: Boolean) {
+        if (released) return
+        stopDirectional()
 
         val soundId = if (isYes) confirmYesId else confirmNoId
         if (soundId != 0 && soundsLoaded.get()) {
             val streamId = soundPool.play(soundId, 1.0f, 1.0f, 1, 0, 1.0f)
             Log.d(TAG, "Playing ${if (isYes) "YES" else "NO"} confirmation - streamID=$streamId")
         }
+    }
+
+    @Synchronized
+    fun release() {
+        if (released) return
+        released = true
+        soundsLoaded.set(false)
+        soundPool.setOnLoadCompleteListener(null)
+        soundPool.release()
+        loadedSoundIds.clear()
+        currentHorizontalStreamId = 0
+        currentVerticalStreamId = 0
     }
 }

@@ -58,9 +58,8 @@ import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableLongStateOf
-import androidx.compose.runtime.mutableStateListOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -78,6 +77,9 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
@@ -91,9 +93,9 @@ import me.kavishdevar.librepods.presentation.theme.DesignSystem
 import me.kavishdevar.librepods.presentation.theme.LocalDesignSystem
 import me.kavishdevar.librepods.presentation.viewmodel.AirPodsViewModel
 import me.kavishdevar.librepods.services.ServiceManager
+import me.kavishdevar.librepods.utils.Acceleration
 import me.kavishdevar.librepods.utils.HeadTracking
 import kotlin.io.encoding.ExperimentalEncodingApi
-import kotlin.math.abs
 
 @ExperimentalHazeMaterialsApi
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalAnimationApi::class)
@@ -273,21 +275,28 @@ fun HeadTrackingScreen(viewModel: AirPodsViewModel, navigateToPurchase: () -> Un
 
 @Composable
 private fun Plot() {
-    val acceleration by HeadTracking.acceleration.collectAsState()
     val maxPoints = 100
-    val points = remember { mutableStateListOf<Pair<Float, Float>>() }
+    val points = remember { HeadTrackingPlotHistory(maxPoints) }
+    val drawVersion = remember { mutableIntStateOf(0) }
+    val lifecycleOwner = LocalLifecycleOwner.current
     val darkTheme = isSystemInDarkTheme()
-
-    var maxAbs by remember { mutableFloatStateOf(1000f) }
-
-    LaunchedEffect(acceleration) {
-        points.add(Pair(acceleration.horizontal, acceleration.vertical))
-        if (points.size > maxPoints) {
-            points.removeAt(0)
+    val labelPaint = remember(darkTheme) {
+        Paint().apply {
+            color = if (darkTheme) android.graphics.Color.WHITE else android.graphics.Color.BLACK
         }
+    }
 
-        val currentMax = points.maxOf { maxOf(abs(it.first), abs(it.second)) }
-        maxAbs = maxOf(currentMax * 1.2f, 1000f)
+    LaunchedEffect(lifecycleOwner, points) {
+        var previousAcceleration: Acceleration? = null
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            HeadTracking.acceleration.collect { acceleration ->
+                if (acceleration != previousAcceleration) {
+                    points.add(acceleration.horizontal, acceleration.vertical)
+                    drawVersion.intValue++
+                    previousAcceleration = acceleration
+                }
+            }
+        }
     }
 
     Card(
@@ -308,6 +317,10 @@ private fun Plot() {
             Canvas(
                 modifier = Modifier.fillMaxSize()
             ) {
+                // Observe samples only during drawing, so a packet invalidates the
+                // canvas without recomposing the plot or restarting its collector.
+                drawVersion.intValue
+                val maxAbs = maxOf(points.maxMagnitude() * 1.2f, 1000f)
                 val width = size.width
                 val height = size.height
                 val xScale = width / maxPoints
@@ -351,30 +364,27 @@ private fun Plot() {
 
                         drawLine(
                             color = horizontalColor,
-                            start = Offset(x1, zeroY - points[i].first * yScale),
-                            end = Offset(x2, zeroY - points[i + 1].first * yScale),
+                            start = Offset(x1, zeroY - points.horizontalAt(i) * yScale),
+                            end = Offset(x2, zeroY - points.horizontalAt(i + 1) * yScale),
                             strokeWidth = 2.dp.toPx()
                         )
 
                         drawLine(
                             color = verticalColor,
-                            start = Offset(x1, zeroY - points[i].second * yScale),
-                            end = Offset(x2, zeroY - points[i + 1].second * yScale),
+                            start = Offset(x1, zeroY - points.verticalAt(i) * yScale),
+                            end = Offset(x2, zeroY - points.verticalAt(i + 1) * yScale),
                             strokeWidth = 2.dp.toPx()
                         )
                     }
                 }
 
                 drawContext.canvas.nativeCanvas.apply {
-                    val paint = Paint().apply {
-                        color = if (darkTheme) android.graphics.Color.WHITE else android.graphics.Color.BLACK
-                        textSize = 12.sp.toPx()
-                        textAlign = Paint.Align.RIGHT
-                    }
+                    labelPaint.textSize = 12.sp.toPx()
+                    labelPaint.textAlign = Paint.Align.RIGHT
 
-                    drawText("${maxAbs.toInt()}", 30.dp.toPx(), 20.dp.toPx(), paint)
-                    drawText("0", 30.dp.toPx(), height/2, paint)
-                    drawText("-${maxAbs.toInt()}", 30.dp.toPx(), height - 10.dp.toPx(), paint)
+                    drawText("${maxAbs.toInt()}", 30.dp.toPx(), 20.dp.toPx(), labelPaint)
+                    drawText("0", 30.dp.toPx(), height/2, labelPaint)
+                    drawText("-${maxAbs.toInt()}", 30.dp.toPx(), height - 10.dp.toPx(), labelPaint)
                 }
 
                 val legendY = 15.dp.toPx()
@@ -382,22 +392,13 @@ private fun Plot() {
 
                 drawCircle(horizontalColor, 5.dp.toPx(), Offset(width - 150.dp.toPx(), legendY))
                 drawContext.canvas.nativeCanvas.apply {
-                    val paint = Paint().apply {
-                        color = if (darkTheme) android.graphics.Color.WHITE else android.graphics.Color.BLACK
-                        textSize = 12.sp.toPx()
-                        textAlign = Paint.Align.LEFT
-                    }
-                    drawText("Horizontal", width - 140.dp.toPx(), textOffsetY, paint)
+                    labelPaint.textAlign = Paint.Align.LEFT
+                    drawText("Horizontal", width - 140.dp.toPx(), textOffsetY, labelPaint)
                 }
 
                 drawCircle(verticalColor, 5.dp.toPx(), Offset(width - 70.dp.toPx(), legendY))
                 drawContext.canvas.nativeCanvas.apply {
-                    val paint = Paint().apply {
-                        color = if (darkTheme) android.graphics.Color.WHITE else android.graphics.Color.BLACK
-                        textSize = 12.sp.toPx()
-                        textAlign = Paint.Align.LEFT
-                    }
-                    drawText("Vertical", width - 60.dp.toPx(), textOffsetY, paint)
+                    drawText("Vertical", width - 60.dp.toPx(), textOffsetY, labelPaint)
                 }
             }
         }

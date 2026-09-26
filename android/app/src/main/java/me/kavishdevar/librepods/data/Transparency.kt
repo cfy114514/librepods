@@ -146,36 +146,28 @@ fun sendTransparencySettings(writer: (ATTHandles, ByteArray) -> Unit, transparen
     debounceJob = CoroutineScope(Dispatchers.IO).launch {
         delay(100)
         try {
-            val buffer = ByteBuffer.allocate(
-                if (transparencySettings.ownVoiceAmplification != null) 104 else 100
-            ).order(ByteOrder.LITTLE_ENDIAN)
-
-            buffer.putFloat(if (transparencySettings.enabled) 1.0f else 0.0f)
-
-            for (eq in transparencySettings.leftEQ) {
-                buffer.putFloat(eq)
-            }
-            buffer.putFloat(transparencySettings.leftAmplification)
-            buffer.putFloat(transparencySettings.leftTone)
-            buffer.putFloat(if (transparencySettings.leftConversationBoost) 1.0f else 0.0f)
-            buffer.putFloat(transparencySettings.leftAmbientNoiseReduction)
-
-            for (eq in transparencySettings.rightEQ) {
-                buffer.putFloat(eq)
-            }
-            buffer.putFloat(transparencySettings.rightAmplification)
-            buffer.putFloat(transparencySettings.rightTone)
-            buffer.putFloat(if (transparencySettings.rightConversationBoost) 1.0f else 0.0f)
-            buffer.putFloat(transparencySettings.rightAmbientNoiseReduction)
-
-            if (transparencySettings.ownVoiceAmplification != null) {
-                buffer.putFloat(transparencySettings.ownVoiceAmplification)
-            }
-
-            val data = buffer.array()
+            val data = encodeTransparencySettings(transparencySettings)
             writer(ATTHandles.TRANSPARENCY, data)
         } catch (e: IOException) {
             e.printStackTrace()
         }
     }
+}
+
+fun encodeTransparencySettings(settings: TransparencySettings): ByteArray {
+    val buffer = ByteBuffer.allocate(if (settings.ownVoiceAmplification != null) 104 else 100)
+        .order(ByteOrder.LITTLE_ENDIAN)
+    buffer.putFloat(if (settings.enabled) 1f else 0f)
+    for (eq in settings.leftEQ) buffer.putFloat(eq)
+    buffer.putFloat(settings.leftAmplification)
+    buffer.putFloat(settings.leftTone)
+    buffer.putFloat(if (settings.leftConversationBoost) 1f else 0f)
+    buffer.putFloat(settings.leftAmbientNoiseReduction)
+    for (eq in settings.rightEQ) buffer.putFloat(eq)
+    buffer.putFloat(settings.rightAmplification)
+    buffer.putFloat(settings.rightTone)
+    buffer.putFloat(if (settings.rightConversationBoost) 1f else 0f)
+    buffer.putFloat(settings.rightAmbientNoiseReduction)
+    settings.ownVoiceAmplification?.let { buffer.putFloat(it) }
+    return buffer.array()
 }

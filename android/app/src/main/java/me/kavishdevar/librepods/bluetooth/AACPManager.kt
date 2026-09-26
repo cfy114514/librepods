@@ -62,6 +62,14 @@ class AACPManager {
 
         private val HEADER_BYTES = byteArrayOf(0x04, 0x00, 0x04, 0x00)
 
+        internal fun hasExpectedHeader(packet: ByteArray): Boolean {
+            if (packet.size < HEADER_BYTES.size) return false
+            for (index in HEADER_BYTES.indices) {
+                if (packet[index] != HEADER_BYTES[index]) return false
+            }
+            return true
+        }
+
         data class ControlCommandStatus(
             val identifier: ControlCommandIdentifiers, val value: ByteArray
         ) {
@@ -207,25 +215,36 @@ class AACPManager {
 
     var customEqCallback: ((CustomEq) -> Unit)? = null
 
+    @Synchronized
     fun getControlCommandStatus(identifier: ControlCommandIdentifiers): ControlCommandStatus? {
         return controlCommandStatusList.find { it.identifier == identifier }
     }
 
-    private fun setControlCommandStatusValue(
+    @Synchronized
+    internal fun setControlCommandStatusValue(
         identifier: ControlCommandIdentifiers, value: ByteArray
     ) {
-        val existingStatus = getControlCommandStatus(identifier)
-        if (existingStatus?.value.contentEquals(value)) {
-            controlCommandStatusList.remove(existingStatus)
+        val index = controlCommandStatusList.indexOfFirst { it.identifier == identifier }
+        val status = ControlCommandStatus(identifier, value)
+        if (index >= 0) {
+            controlCommandStatusList[index] = status
+        } else {
+            controlCommandStatusList.add(status)
         }
-        controlCommandListeners[identifier]?.forEach { listener ->
-            listener.onControlCommandReceived(ControlCommand(identifier.value, value))
-        }
-        controlCommandStatusList.add(ControlCommandStatus(identifier, value))
 
         if (identifier == ControlCommandIdentifiers.OWNS_CONNECTION) {
             owns = value.isNotEmpty() && value[0] == 0x01.toByte()
         }
+        controlCommandListeners[identifier]?.toList()?.forEach { listener ->
+            listener.onControlCommandReceived(ControlCommand(identifier.value, value))
+        }
+    }
+
+    internal fun parseAndStoreControlCommand(packet: ByteArray): ControlCommand? {
+        val command = ControlCommand.fromByteArray(packet)
+        val identifier = ControlCommandIdentifiers.fromByte(command.identifier) ?: return null
+        setControlCommandStatusValue(identifier, command.value)
+        return command
     }
 
     interface PacketCallback {
@@ -267,12 +286,14 @@ class AACPManager {
         fun onControlCommandReceived(controlCommand: ControlCommand)
     }
 
+    @Synchronized
     fun registerControlCommandListener(
         identifier: ControlCommandIdentifiers, callback: ControlCommandListener
     ) {
         controlCommandListeners.getOrPut(identifier) { mutableListOf() }.add(callback)
     }
 
+    @Synchronized
     fun unregisterControlCommandListener(
         identifier: ControlCommandIdentifiers, callback: ControlCommandListener
     ) {
@@ -308,39 +329,20 @@ class AACPManager {
 
     fun sendControlCommand(identifier: Byte, value: ByteArray): Boolean {
         val controlPacket = createControlCommandPacket(identifier, value)
-        setControlCommandStatusValue(
-            ControlCommandIdentifiers.fromByte(identifier) ?: return false, value
-        )
         return sendDataPacket(controlPacket)
     }
 
     @OptIn(ExperimentalStdlibApi::class)
     fun sendControlCommand(identifier: Byte, value: Byte): Boolean {
-        val controlPacket = createControlCommandPacket(identifier, byteArrayOf(value))
-        setControlCommandStatusValue(
-            ControlCommandIdentifiers.fromByte(identifier) ?: return false, byteArrayOf(value)
-        )
-        return sendDataPacket(controlPacket)
+        return sendControlCommand(identifier, byteArrayOf(value))
     }
 
     fun sendControlCommand(identifier: Byte, value: Boolean): Boolean {
-        val controlPacket = createControlCommandPacket(
-            identifier, if (value) byteArrayOf(0x01) else byteArrayOf(0x02)
-        )
-        setControlCommandStatusValue(
-            ControlCommandIdentifiers.fromByte(identifier) ?: return false,
-            if (value) byteArrayOf(0x01) else byteArrayOf(0x02)
-        )
-        return sendDataPacket(controlPacket)
+        return sendControlCommand(identifier, if (value) byteArrayOf(0x01) else byteArrayOf(0x02))
     }
 
     fun sendControlCommand(identifier: Byte, value: Int): Boolean {
-        val controlPacket = createControlCommandPacket(identifier, byteArrayOf(value.toByte()))
-        setControlCommandStatusValue(
-            ControlCommandIdentifiers.fromByte(identifier) ?: return false,
-            byteArrayOf(value.toByte())
-        )
-        return sendDataPacket(controlPacket)
+        return sendControlCommand(identifier, byteArrayOf(value.toByte()))
     }
 
     fun parseProximityKeysResponse(data: ByteArray): Map<ProximityKeyType, ByteArray> {
@@ -399,7 +401,7 @@ class AACPManager {
 
     @OptIn(ExperimentalStdlibApi::class)
     fun receivePacket(packet: ByteArray) {
-        if (!packet.toHexString().startsWith("04000400")) {
+        if (!hasExpectedHeader(packet)) {
             Log.w(
                 TAG, "Received packet does not start with expected header: ${
                 packet.joinToString(" ") {
@@ -422,16 +424,12 @@ class AACPManager {
 
             Opcodes.CONTROL_COMMAND -> {
                 val controlCommand = try {
-                    ControlCommand.fromByteArray(packet)
+                    parseAndStoreControlCommand(packet) ?: return
                 } catch (e: Exception) {
                     Log.w(TAG, "Failed to parse control command: ${e.message}")
                     callback?.onUnknownPacketReceived(packet)
                     return
                 }
-                setControlCommandStatusValue(
-                    ControlCommandIdentifiers.fromByte(controlCommand.identifier) ?: return,
-                    controlCommand.value
-                )
                 Log.d(
                     TAG,
                     "Control command received: ${controlCommand.identifier.toHexString()} - ${
@@ -456,18 +454,6 @@ class AACPManager {
 
                 val controlCommandIdentifier =
                     ControlCommandIdentifiers.fromByte(controlCommand.identifier)
-                if (controlCommandIdentifier != null) {
-                    controlCommandListeners[controlCommandIdentifier]?.forEach { listener ->
-                        Log.d(TAG, "calling listener for ${controlCommandIdentifier.name}")
-                        listener.onControlCommandReceived(controlCommand)
-                    }
-                } else {
-                    Log.w(
-                        TAG,
-                        "Unknown control command identifier: ${controlCommand.identifier.toHexString()}"
-                    )
-                }
-
                 if (controlCommandIdentifier == ControlCommandIdentifiers.OWNS_CONNECTION) {
                     callback?.onOwnershipChangeReceived(owns)
                 }
@@ -1143,7 +1129,7 @@ class AACPManager {
 
             if (packet[4] == Opcodes.CONTROL_COMMAND) {
                 val controlCommand = try {
-                    ControlCommand.fromByteArray(packet)
+                    parseAndStoreControlCommand(packet) ?: return false
                 } catch (e: Exception) {
                     Log.w(TAG, "Invalid control command: ${e.message}")
                     callback?.onUnknownPacketReceived(packet)
@@ -1153,10 +1139,6 @@ class AACPManager {
                     TAG, "Control command: ${controlCommand.identifier.toHexString()} - ${
                     controlCommand.value.joinToString(" ") { "%02X".format(it) }
                 }")
-                setControlCommandStatusValue(
-                    ControlCommandIdentifiers.fromByte(controlCommand.identifier) ?: return false,
-                    controlCommand.value
-                )
             }
 
             val socket = BluetoothConnectionManager.aacpSocket ?: return false
@@ -1271,8 +1253,14 @@ class AACPManager {
 
     fun disconnected() {
         Log.d(TAG, "Disconnected, clearing state")
+        resetDeviceState()
+    }
+
+    @Synchronized
+    internal fun resetDeviceState() {
         controlCommandStatusList.clear()
-        controlCommandListeners.clear()
+        // Subscriptions belong to their observers, which explicitly unregister.
+        // The same service and ViewModel survive a Bluetooth reconnection.
         owns = false
         oldConnectedDevices = listOf()
         connectedDevices = listOf()

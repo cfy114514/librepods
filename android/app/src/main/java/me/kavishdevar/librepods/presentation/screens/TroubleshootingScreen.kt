@@ -47,6 +47,8 @@ import androidx.compose.foundation.layout.navigationBars
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
@@ -91,13 +93,16 @@ import androidx.core.content.FileProvider
 import com.kyant.backdrop.backdrops.layerBackdrop
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
 import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.utils.LogCollector
 import java.io.File
+import java.io.IOException
 import java.text.SimpleDateFormat
 import java.util.Date
 import java.util.Locale
@@ -128,21 +133,15 @@ fun TroubleshootingScreen() {
     val savedLogs = remember { mutableStateListOf<File>() }
 
     var isCollectingLogs by remember { mutableStateOf(false) }
+    val collectionAttempt = remember { mutableIntStateOf(0) }
     var showTroubleshootingSteps by remember { mutableStateOf(false) }
     var currentStep by remember { mutableIntStateOf(0) }
-    var logContent by remember { mutableStateOf("") }
+    var logPreview by remember { mutableStateOf(LogPreview()) }
     var selectedLogFile by remember { mutableStateOf<File?>(null) }
     var showDeleteDialog by remember { mutableStateOf(false) }
     var showDeleteAllDialog by remember { mutableStateOf(false) }
     var isLoadingLogContent by remember { mutableStateOf(false) }
     var logContentLoaded by remember { mutableStateOf(false) }
-
-    LaunchedEffect(isCollectingLogs) {
-        while (isCollectingLogs) {
-            delay(250)
-            delay(250)
-        }
-    }
 
     val sheetState = rememberModalBottomSheetState(skipPartiallyExpanded = false)
     var showBottomSheet by remember { mutableStateOf(false) }
@@ -170,10 +169,14 @@ fun TroubleshootingScreen() {
         contract = ActivityResultContracts.CreateDocument("text/plain")
     ) { uri ->
         if (uri != null) {
+            val fileToSave = selectedLogFile
             coroutineScope.launch(Dispatchers.IO) {
                 try {
-                    context.contentResolver.openOutputStream(uri)?.use { outputStream ->
-                        outputStream.write(logContent.toByteArray())
+                    val source = fileToSave ?: throw IOException("No log file selected")
+                    val output = context.contentResolver.openOutputStream(uri)
+                        ?: throw IOException("Cannot open destination")
+                    output.use { outputStream ->
+                        source.inputStream().use { it.copyTo(outputStream) }
                     }
                     withContext(Dispatchers.Main) {
                         Toast.makeText(context, "Log saved successfully", Toast.LENGTH_SHORT).show()
@@ -204,8 +207,8 @@ fun TroubleshootingScreen() {
 
     fun openLogBottomSheet(file: File) {
         selectedLogFile = file
-        logContent = ""
-        isLoadingLogContent = false
+        logPreview = LogPreview()
+        isLoadingLogContent = true
         logContentLoaded = false
         showBottomSheet = true
     }
@@ -432,8 +435,10 @@ fun TroubleshootingScreen() {
                                     onClick = {
                                         currentStep = 2
                                         isCollectingLogs = true
+                                        val attempt = ++collectionAttempt.intValue
 
                                         coroutineScope.launch {
+                                            var connectionStopJob: Job? = null
                                             try {
                                                 logCollector.clearLogs()
 
@@ -441,24 +446,23 @@ fun TroubleshootingScreen() {
 
                                                 logCollector.killBluetoothService()
 
-                                                withContext(Dispatchers.Main) {
-                                                    delay(500)
-                                                    currentStep = 3
-                                                }
+                                                delay(500)
+                                                if (!isCollectingLogs || collectionAttempt.intValue != attempt) return@launch
+                                                currentStep = 3
 
                                                 val timestamp = SimpleDateFormat(
                                                     "yyyyMMdd_HHmmss",
                                                     Locale.US
                                                 ).format(Date())
 
-                                                logContent =
+                                                val logFile =
                                                     logCollector.startLogCollection(
-                                                        listener = { /* Removed live log display */ },
+                                                        fileName = "airpods_log_$timestamp.txt",
                                                         connectionDetectedCallback = {
-                                                            launch {
+                                                            connectionStopJob = launch {
                                                                 delay(5000)
                                                                 withContext(Dispatchers.Main) {
-                                                                    if (isCollectingLogs) {
+                                                                    if (isCollectingLogs && collectionAttempt.intValue == attempt) {
                                                                         logCollector.stopLogCollection()
                                                                         currentStep = 4
                                                                         isCollectingLogs =
@@ -469,32 +473,35 @@ fun TroubleshootingScreen() {
                                                         }
                                                     )
 
-                                                val logFile =
-                                                    logCollector.saveLogToInternalStorage(
-                                                        "airpods_log_$timestamp.txt",
-                                                        logContent
-                                                    )
-                                                logFile?.let {
+                                                logFile.let {
                                                     withContext(Dispatchers.Main) {
                                                         savedLogs.add(0, it)
-                                                        selectedLogFile = it
-                                                        Toast.makeText(
-                                                            context,
-                                                            "Log saved: ${it.name}",
-                                                            Toast.LENGTH_SHORT
-                                                        ).show()
+                                                        if (collectionAttempt.intValue == attempt) {
+                                                            selectedLogFile = it
+                                                            Toast.makeText(
+                                                                context,
+                                                                "Log saved: ${it.name}",
+                                                                Toast.LENGTH_SHORT
+                                                            ).show()
+                                                        }
                                                     }
                                                 }
+                                            } catch (e: CancellationException) {
+                                                throw e
                                             } catch (e: Exception) {
                                                 withContext(Dispatchers.Main) {
-                                                    Toast.makeText(
-                                                        context,
-                                                        "Error collecting logs: ${e.message}",
-                                                        Toast.LENGTH_SHORT
-                                                    ).show()
-                                                    isCollectingLogs = false
-                                                    currentStep = 0
+                                                    if (collectionAttempt.intValue == attempt) {
+                                                        Toast.makeText(
+                                                            context,
+                                                            "Error collecting logs: ${e.message}",
+                                                            Toast.LENGTH_SHORT
+                                                        ).show()
+                                                        isCollectingLogs = false
+                                                        currentStep = 0
+                                                    }
                                                 }
+                                            } finally {
+                                                connectionStopJob?.cancel()
                                             }
                                         }
                                     },
@@ -531,16 +538,19 @@ fun TroubleshootingScreen() {
 
                                         Button(
                                             onClick = {
+                                                val attempt = collectionAttempt.intValue
                                                 coroutineScope.launch {
                                                     logCollector.addLogMarker(
                                                         LogCollector.LogMarkerType.CUSTOM,
                                                         "Manual stop requested by user"
                                                     )
                                                     delay(1000)
+                                                    if (collectionAttempt.intValue != attempt) return@launch
                                                     logCollector.stopLogCollection()
                                                     delay(500)
 
                                                     withContext(Dispatchers.Main) {
+                                                        if (collectionAttempt.intValue != attempt) return@withContext
                                                         currentStep = 4
                                                         isCollectingLogs = false
                                                         Toast.makeText(
@@ -760,17 +770,18 @@ fun TroubleshootingScreen() {
             ) {
                 LaunchedEffect(selectedLogFile) {
                     if (!logContentLoaded) {
+                        isLoadingLogContent = true
                         delay(300)
-                        withContext(Dispatchers.IO) {
-                            isLoadingLogContent = true
-                            logContent = try {
-                                selectedLogFile?.readText() ?: ""
-                            } catch (e: Exception) {
-                                "Error loading log content: ${e.message}"
+                        val file = selectedLogFile
+                        logPreview = withContext(Dispatchers.IO) {
+                            try {
+                                file?.let(::readLogPreview) ?: LogPreview()
+                            } catch (e: IOException) {
+                                LogPreview(listOf("Error loading log content: ${e.message}"))
                             }
-                            isLoadingLogContent = false
-                            logContentLoaded = true
                         }
+                        isLoadingLogContent = false
+                        logContentLoaded = true
                     }
                 }
 
@@ -813,6 +824,14 @@ fun TroubleshootingScreen() {
                             CircularProgressIndicator(color = accentColor)
                         }
                     } else {
+                        if (logPreview.isTruncated) {
+                            Text(
+                                text = "Showing a shortened preview of recent log entries. Save or share for the complete log.",
+                                color = textColor.copy(alpha = 0.7f),
+                                fontSize = 12.sp,
+                                modifier = Modifier.padding(bottom = 8.dp)
+                            )
+                        }
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -823,23 +842,23 @@ fun TroubleshootingScreen() {
                                 )
                         ) {
                             val horizontalScrollState = rememberScrollState()
-                            val verticalScrollState = rememberScrollState()
 
-                            Box(
+                            LazyColumn(
                                 modifier = Modifier
                                     .fillMaxSize()
                                     .padding(8.dp)
                                     .horizontalScroll(horizontalScrollState)
-                                    .verticalScroll(verticalScrollState)
                             ) {
-                                Text(
-                                    text = logContent,
-                                    fontSize = 14.sp,
-                                    color = Color.LightGray,
-                                    lineHeight = 20.sp,
-                                    fontFamily = FontFamily.Monospace,
-                                    softWrap = false
-                                )
+                                items(logPreview.lines) { line ->
+                                    Text(
+                                        text = line,
+                                        fontSize = 14.sp,
+                                        color = Color.LightGray,
+                                        lineHeight = 20.sp,
+                                        fontFamily = FontFamily.Monospace,
+                                        softWrap = false
+                                    )
+                                }
                             }
                         }
                     }

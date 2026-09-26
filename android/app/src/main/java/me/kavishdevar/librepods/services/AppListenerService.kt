@@ -65,8 +65,12 @@ class AppListenerService: AccessibilityService() {
     }
 
     override fun onDestroy() {
-        super.onDestroy()
         prefs.unregisterOnSharedPreferenceChangeListener(preferenceChangeListener)
+        if (cameraOpen) {
+            cameraOpen = false
+            ServiceManager.getService()?.cameraClosed()
+        }
+        super.onDestroy()
     }
 
     override fun onAccessibilityEvent(ev: AccessibilityEvent?) {

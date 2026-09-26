@@ -62,12 +62,11 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
-import kotlinx.coroutines.Job
 import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.bluetooth.ATTHandles
 import me.kavishdevar.librepods.data.HearingAidSettings
 import me.kavishdevar.librepods.data.parseHearingAidSettingsResponse
-import me.kavishdevar.librepods.data.sendHearingAidSettings
+import me.kavishdevar.librepods.data.encodeHearingAidSettings
 import me.kavishdevar.librepods.presentation.theme.DesignSystem
 import me.kavishdevar.librepods.presentation.theme.LibrePodsTheme
 import me.kavishdevar.librepods.presentation.theme.LocalDesignSystem
@@ -144,34 +143,19 @@ fun UpdateHearingTestScreen(
             mutableStateOf(FloatArray(8))
         }
 
-        val debounceJob = remember { mutableStateOf<Job?>(null) }
         val initialized = rememberSaveable { mutableStateOf(false) }
 
-        val hearingAidSettings = remember {
-            mutableStateOf(
-                HearingAidSettings(
-                    leftEQ = leftEQ.value,
-                    rightEQ = rightEQ.value,
-                    leftAmplification = leftAmplification.floatValue,
-                    rightAmplification = rightAmplification.floatValue,
-                    leftTone = tone.floatValue,
-                    rightTone = tone.floatValue,
-                    leftConversationBoost = conversationBoostEnabled.value,
-                    rightConversationBoost = conversationBoostEnabled.value,
-                    leftAmbientNoiseReduction = ambientNoiseReduction.floatValue,
-                    rightAmbientNoiseReduction = ambientNoiseReduction.floatValue,
-                    netAmplification = leftAmplification.floatValue + rightAmplification.floatValue / 2,
-                    balance = 0.5f + (rightAmplification.floatValue - leftAmplification.floatValue) / 2,
-                    ownVoiceAmplification = ownVoiceAmplification.floatValue
-                )
-            )
+        val editor = rememberDeviceSettingsEditor<Pair<ByteArray, HearingAidSettings>> { (source, settings) ->
+            encodeHearingAidSettings(source, settings)?.let { data ->
+                setATTCharacteristicValue(ATTHandles.HEARING_AID, data)
+            }
         }
 
         LaunchedEffect(state.hearingAidData) {
             val parsed = parseHearingAidSettingsResponse(state.hearingAidData)
-            if (parsed != null) {
-                leftEQ.value = parsed.leftEQ.copyOf()
-                rightEQ.value = parsed.rightEQ.copyOf()
+            if (parsed != null) editor.applyDeviceUpdate {
+                if (!leftEQ.value.contentEquals(parsed.leftEQ)) leftEQ.value = parsed.leftEQ.copyOf()
+                if (!rightEQ.value.contentEquals(parsed.rightEQ)) rightEQ.value = parsed.rightEQ.copyOf()
                 conversationBoostEnabled.value = parsed.leftConversationBoost
                 tone.floatValue = parsed.leftTone
                 ambientNoiseReduction.floatValue = parsed.leftAmbientNoiseReduction
@@ -185,18 +169,9 @@ fun UpdateHearingTestScreen(
             }
         }
 
-        LaunchedEffect(
-            leftEQ.value,
-            rightEQ.value,
-            conversationBoostEnabled.value,
-            leftAmplification.floatValue,
-            rightAmplification.floatValue,
-            tone.floatValue,
-            ambientNoiseReduction.floatValue,
-            ownVoiceAmplification.floatValue
-        ) {
-            if (!initialized.value) return@LaunchedEffect
-            hearingAidSettings.value = HearingAidSettings(
+        fun sendUserEdit() {
+            if (!initialized.value) return
+            val settings = HearingAidSettings(
                 leftEQ = leftEQ.value,
                 rightEQ = rightEQ.value,
                 leftAmplification = leftAmplification.floatValue,
@@ -211,8 +186,7 @@ fun UpdateHearingTestScreen(
                 balance = 0.5f + (rightAmplification.floatValue - leftAmplification.floatValue) / 2,
                 ownVoiceAmplification = ownVoiceAmplification.floatValue
             )
-            Log.d(TAG, "Updated settings: ${hearingAidSettings.value}")
-            sendHearingAidSettings(state.hearingAidData, hearingAidSettings.value, debounceJob, setATTCharacteristicValue)
+            editor.userEdited(state.hearingAidData.copyOf() to settings)
         }
 
         val frequencies =
@@ -258,6 +232,7 @@ fun UpdateHearingTestScreen(
                             val newArray = leftEQ.value.copyOf()
                             newArray[index] = parsed
                             leftEQ.value = newArray
+                            sendUserEdit()
                             Log.d(TAG, "Left EQ updated at index $index to $parsed")
                         }
                     },
@@ -277,6 +252,7 @@ fun UpdateHearingTestScreen(
                             val newArray = rightEQ.value.copyOf()
                             newArray[index] = parsed
                             rightEQ.value = newArray
+                            sendUserEdit()
                             Log.d(TAG, "Right EQ updated at index $index to $parsed")
                         }
                     },
