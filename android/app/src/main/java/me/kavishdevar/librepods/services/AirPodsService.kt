@@ -364,7 +364,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private data class HeadTrackingRequest(
         val ticket: HeadTrackingSession.Ticket, val socket: BluetoothSocket, val deviceSession: Long,
         val attempt: Long, val preferredAlternate: Boolean, val alternate: Boolean = preferredAlternate,
-        val retryOf: Long? = null
+        val retryOf: Long? = null, val motionService: Int? = null
     )
     @Volatile private var appliedHeadTrackingRequest: HeadTrackingRequest? = null
     private val headTrackingBindingLock = Any()
@@ -1229,11 +1229,18 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 currentPacketPeer() ?: return
                 val applied = appliedHeadTrackingRequest
                 if (applied != null && applied.ticket.enabled && headTrackingRequestCurrent(applied)) {
+                    val motion = me.kavishdevar.librepods.bluetooth.RtBuddyHeadTracking.motion(headTracking) ?: return
                     // AACP has validated the sensor payload length before this callback.
                     headTrackingStartup.received(applied)
-                    HeadTracking.processPacket(headTracking)
+                    HeadTracking.processMotion(motion)
                     processHeadTrackingData(headTracking)
                 }
+            }
+
+            override fun onHeadTrackingServiceDiscovered() {
+                currentPacketPeer() ?: return
+                val ticket = headTrackingSession.capture()
+                if (ticket.enabled) enqueueHeadTrackingCommand(ticket, restart = true)
             }
 
             override fun onProximityKeysReceived(proximityKeys: ByteArray) {
@@ -2475,8 +2482,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     @RequiresApi(Build.VERSION_CODES.R)
     fun processHeadTrackingData(data: ByteArray) {
-        val horizontal = ByteBuffer.wrap(data, 51, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt()
-        val vertical = ByteBuffer.wrap(data, 53, 2).order(ByteOrder.LITTLE_ENDIAN).short.toInt()
+        val motion = me.kavishdevar.librepods.bluetooth.RtBuddyHeadTracking.motion(data) ?: return
+        val horizontal = motion.horizontal
+        val vertical = motion.vertical
         try {
             gestureDetector?.processHeadOrientation(horizontal, vertical)
         } catch (e: Exception) {
@@ -3133,6 +3141,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                         delay(200)
                         if (!isCurrentConnection()) return@startup
                         aacpManager.sendSomePacketIDontKnowWhatItIs()
+                        aacpManager.sendPacket(me.kavishdevar.librepods.bluetooth.RtBuddyHeadTracking.discoveryPacket())
                         delay(200)
                         if (!isCurrentConnection()) return@startup
                         aacpManager.sendRequestProximityKeys(bothKeys)
@@ -3772,7 +3781,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 aacpManager.isCurrentDeviceSession(it.deviceSession)
         }?.alternate ?: preferred
         val request = HeadTrackingRequest(ticket, socket, aacpManager.captureDeviceSession(),
-            headTrackingAttempts.incrementAndGet(), preferred, alternate)
+            headTrackingAttempts.incrementAndGet(), preferred, alternate, motionService = aacpManager.headTrackingService)
         if (headTrackingRequestCurrent(request)) headTrackingCommands.offer(Unit, request)
     }
 
@@ -3783,7 +3792,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             request.preferredAlternate == sharedPreferences.getBoolean("use_alternate_head_tracking_packets", true) &&
             request.ticket.peer != null && request.ticket.peer == me.kavishdevar.librepods.data.batteryHistoryIdentity(
                 sharedPreferences.getString("mac_address", "") ?: "") &&
-            aacpManager.isCurrentDeviceSession(request.deviceSession) && isCurrentControlSocket(request.socket)
+            aacpManager.isCurrentDeviceSession(request.deviceSession) && isCurrentControlSocket(request.socket) &&
+            request.motionService == aacpManager.headTrackingService
 
     private fun writeHeadTrackingRequest(request: HeadTrackingRequest) {
         if (!headTrackingRequestCurrent(request)) return
@@ -3795,7 +3805,10 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         } else {
             if (request.alternate) aacpManager.createAlternateStopHeadTrackingPacket() else aacpManager.createStopHeadTrackingPacket()
         }
-        val sent = aacpManager.sendPacket(aacpManager.createDataPacket(data), request.socket) { headTrackingRequestCurrent(request) }
+        val packet = request.motionService?.let {
+            me.kavishdevar.librepods.bluetooth.RtBuddyHeadTracking.settingPacket(it, request.ticket.enabled)
+        } ?: aacpManager.createDataPacket(data)
+        val sent = aacpManager.sendPacket(packet, request.socket) { headTrackingRequestCurrent(request) }
         if (!sent) {
             if (headTrackingRequestCurrent(request)) {
                 if (request.ticket.enabled) headTrackingStartup.failed() else headTrackingStartup.clear()

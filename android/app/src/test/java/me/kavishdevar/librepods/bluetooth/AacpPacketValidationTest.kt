@@ -9,7 +9,7 @@ class AacpPacketValidationTest {
     @Test fun truncatedPacketsNeverReachFixedOffsetCallbacks() {
         val minimums = mapOf(0x04 to 22, 0x09 to 11, 0x06 to 8, 0x19 to 8,
             0x4B to 10, 0x31 to 7, 0x0E to 13, 0x2E to 9, 0x11 to 12,
-            0x1D to 7, 0x63 to 13, 0x17 to 70, 0x53 to 140)
+            0x1D to 7, 0x63 to 13, 0x53 to 140)
         for ((opcode, minimum) in minimums) {
             val packet = manager.createDataPacket(byteArrayOf(opcode.toByte(), 0) + ByteArray(minimum - 6))
             for (length in 0 until minimum) {

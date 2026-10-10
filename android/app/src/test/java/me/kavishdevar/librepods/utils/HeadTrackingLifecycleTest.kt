@@ -4,6 +4,7 @@ import java.util.concurrent.Executors
 import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
 import org.junit.Test
+import me.kavishdevar.librepods.bluetooth.RtBuddyHeadTracking
 
 class HeadTrackingLifecycleTest {
     @Test fun shortPacketsCannotAlterCalibrationOrCrash() {
@@ -16,16 +17,14 @@ class HeadTrackingLifecycleTest {
     @Test fun concurrentResetAndSamplesLeaveFreshCalibrationUsable() {
         val executor = Executors.newFixedThreadPool(2)
         try {
-            val samples = executor.submit { repeat(10_000) { HeadTracking.processPacket(ByteArray(70)) } }
+            val neutral = RtBuddyHeadTracking.Motion(15, 0, 0, 0, 0, 0)
+            val samples = executor.submit { repeat(10_000) { HeadTracking.processMotion(neutral) } }
             val resets = executor.submit { repeat(10_000) { HeadTracking.reset() } }
             samples.get(5, TimeUnit.SECONDS)
             resets.get(5, TimeUnit.SECONDS)
             HeadTracking.reset()
-            repeat(10) { HeadTracking.processPacket(ByteArray(70)) }
-            val sample = ByteArray(70)
-            sample[45] = 0x00
-            sample[46] = 0x7D // o2 = 32000
-            HeadTracking.processPacket(sample)
+            repeat(10) { HeadTracking.processMotion(neutral) }
+            HeadTracking.processMotion(neutral.copy(o2 = 32000))
             assertEquals(Orientation(90f, 90f), HeadTracking.orientation.value)
         } finally { executor.shutdownNow(); HeadTracking.reset() }
     }

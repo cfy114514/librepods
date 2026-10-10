@@ -212,6 +212,9 @@ class AACPManager {
     internal fun isCurrentDeviceSession(generation: Long): Boolean = generation == deviceStateGeneration
     internal fun captureDeviceSession(): Long = deviceStateGeneration
 
+    @Volatile internal var headTrackingService: Int? = null
+        private set
+
     @Volatile
     var owns: Boolean = false
         private set
@@ -323,6 +326,7 @@ class AACPManager {
         fun onControlCommandReceived(controlCommand: ByteArray)
         fun onDeviceInformationReceived(deviceInformation: AirPodsInformation)
         fun onHeadTrackingReceived(headTracking: ByteArray)
+        fun onHeadTrackingServiceDiscovered() {}
         fun onUnknownPacketReceived(packet: ByteArray)
         fun onProximityKeysReceived(proximityKeys: ByteArray)
         fun onStemPressReceived(stemPress: ByteArray)
@@ -515,16 +519,17 @@ class AACPManager {
                 }
 
                 Opcodes.HEADTRACKING -> {
-                    if (packet.size < 70) {
-                        Log.w(
-                            TAG, "Received HEADTRACKING packet too short: ${
-                            packet.joinToString(" ") {
-                                "%02X".format(it)
-                            }
-                        }")
-                        return
+                    val discovered = RtBuddyHeadTracking.discoverService(packet)
+                    if (discovered != null && discovered != headTrackingService && updateDeviceState(current) {
+                            headTrackingService = discovered
+                        }) {
+                        if (current()) callback?.onHeadTrackingServiceDiscovered()
                     }
-                    if (current()) callback?.onHeadTrackingReceived(packet)
+                    val motion = RtBuddyHeadTracking.motion(packet) ?: return
+                    val service = headTrackingService
+                    if ((service != null && motion.service == service || service == null && motion.service in listOf(14, 16)) && current()) {
+                        callback?.onHeadTrackingReceived(packet)
+                    }
                 }
 
                 Opcodes.PROXIMITY_KEYS_RSP -> {
@@ -1341,6 +1346,7 @@ class AACPManager {
     @Synchronized
     internal fun resetDeviceState() {
         deviceStateGeneration++
+        headTrackingService = null
         controlCommandStatusList.clear()
         // Subscriptions belong to their observers, which explicitly unregister.
         // The same service and ViewModel survive a Bluetooth reconnection.

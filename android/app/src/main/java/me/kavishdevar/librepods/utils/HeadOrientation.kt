@@ -43,13 +43,17 @@ object HeadTracking {
 
     @Synchronized
     fun processPacket(packet: ByteArray) {
-        if (packet.size < 55) return
-        val o1 = bytesToInt(packet[43], packet[44])
-        val o2 = bytesToInt(packet[45], packet[46])
-        val o3 = bytesToInt(packet[47], packet[48])
+        val motion = me.kavishdevar.librepods.bluetooth.RtBuddyHeadTracking.motion(packet) ?: return
+        processMotion(motion)
+    }
 
-        val horizontalAccel = bytesToInt(packet[51], packet[52]).toFloat()
-        val verticalAccel = bytesToInt(packet[53], packet[54]).toFloat()
+    @Synchronized
+    internal fun processMotion(motion: me.kavishdevar.librepods.bluetooth.RtBuddyHeadTracking.Motion) {
+        val o1 = motion.o1
+        val o2 = motion.o2
+        val o3 = motion.o3
+        val horizontalAccel = motion.horizontal.toFloat()
+        val verticalAccel = motion.vertical.toFloat()
 
         if (!isCalibrated) {
             calibrationSamples.add(Triple(o1, o2, o3))
@@ -89,10 +93,6 @@ object HeadTracking {
         val yaw = (o2Norm - o3Norm) / 2f / 32000f * 180f
 
         return Orientation(pitch, yaw)
-    }
-
-    private fun bytesToInt(b1: Byte, b2: Byte): Int {
-        return (b2.toInt() shl 8) or (b1.toInt() and 0xFF)
     }
 
     @Synchronized

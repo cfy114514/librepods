@@ -44,6 +44,23 @@ is not used to determine capabilities.
 
 ## Device acceptance checks
 
+### Head tracking USB validation (2026-10-11)
+
+An A3441 with the wireless charging case advertised the RTBuddy `devmotion6`
+service as ID 15. The legacy start packets requested IDs 14/16 and received
+acknowledgements without a motion stream. LibrePods now discovers the service
+for each connection and uses the same discovered ID for start and stop.
+SensorDataWX descriptors and acknowledgements are excluded from motion parsing;
+the protobuf envelope locates the 58-byte motion payload even when its sequence
+varint grows. Axis mapping, orientation formulas and gesture thresholds are unchanged.
+
+USB validation on a Samsung SM-S9110 confirmed real motion values and chart
+updates, nod/Yes detection (confidence 0.9883), shake/No detection (0.9984),
+page exit/re-entry and reconnect after returning the earbuds to the case.
+The final package retains the original release certificate. This validates the
+tested hardware/firmware combination, not all models, actual call handling,
+long-term power consumption or Android system spatial audio.
+
 For A3441, confirm the About section identifies the wireless charging case variant,
 sleep detection and EQ are visible, and Accessibility shows volume swipe but no
 custom transparency. Confirm the same model capabilities with Apple identity

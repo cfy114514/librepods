@@ -15,7 +15,7 @@ internal fun hasCompleteAacpPayload(packet: ByteArray): Boolean {
         AACPManager.Companion.Opcodes.SMART_ROUTING_RESP -> 12
         AACPManager.Companion.Opcodes.INFORMATION -> 7
         AACPManager.Companion.Opcodes.CUSTOM_EQ -> 13
-        AACPManager.Companion.Opcodes.HEADTRACKING -> 70
+        AACPManager.Companion.Opcodes.HEADTRACKING -> return RtBuddyHeadTracking.complete(packet)
         AACPManager.Companion.Opcodes.HEADPHONE_ACCOMMODATION -> 140
         else -> 6
     }
