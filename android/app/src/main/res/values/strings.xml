@@ -388,4 +388,8 @@
     <string name="music_volume_error">Volume control is unavailable. Try again.</string>
     <string name="local_settings_loading">Loading settings…</string>
     <string name="local_settings_error">Could not load or save settings. Retry to keep your changes.</string>
+    <string name="head_tracking_starting">Waiting for AirPods motion data…</string>
+    <string name="head_tracking_receiving">Motion data received. Nod or shake your head to test.</string>
+    <string name="head_tracking_no_data">No motion data received. Wear your AirPods and reconnect, then try again.</string>
+    <string name="head_tracking_inactive">Head tracking is inactive.</string>
 </resources>

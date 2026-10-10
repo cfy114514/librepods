@@ -92,6 +92,7 @@ import me.kavishdevar.librepods.presentation.components.StyledToggle
 import me.kavishdevar.librepods.presentation.theme.DesignSystem
 import me.kavishdevar.librepods.presentation.theme.LocalDesignSystem
 import me.kavishdevar.librepods.presentation.viewmodel.AirPodsViewModel
+import me.kavishdevar.librepods.services.HeadTrackingStatus
 import me.kavishdevar.librepods.services.ServiceManager
 import me.kavishdevar.librepods.utils.Acceleration
 import me.kavishdevar.librepods.utils.HeadTracking
@@ -117,6 +118,7 @@ fun HeadTrackingScreen(viewModel: AirPodsViewModel, navigateToPurchase: () -> Un
     val bottomPadding = if (m3eEnabled) 0.dp else WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 12.dp
 
     var gestureText by remember { mutableStateOf("") }
+    var testing by remember { mutableStateOf(false) }
     val coroutineScope = rememberCoroutineScope()
 
     var lastClickTime by remember { mutableLongStateOf(0L) }
@@ -181,6 +183,16 @@ fun HeadTrackingScreen(viewModel: AirPodsViewModel, navigateToPurchase: () -> Un
                 modifier = Modifier.padding(start = 16.dp, bottom = 8.dp, top = 8.dp)
             )
             Plot(state.headTrackingActive, state.headTrackingPeer)
+            Text(
+                stringResource(when (state.headTrackingStatus) {
+                    HeadTrackingStatus.STARTING -> R.string.head_tracking_starting
+                    HeadTrackingStatus.RECEIVING -> R.string.head_tracking_receiving
+                    HeadTrackingStatus.UNAVAILABLE -> R.string.head_tracking_no_data
+                    HeadTrackingStatus.INACTIVE -> R.string.head_tracking_inactive
+                }),
+                style = MaterialTheme.typography.bodySmall,
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp)
+            )
 
             Spacer(modifier = Modifier.height(16.dp))
 
@@ -198,18 +210,27 @@ fun HeadTrackingScreen(viewModel: AirPodsViewModel, navigateToPurchase: () -> Un
         val gestureYes = stringResource(R.string.head_gesture_yes)
         val gestureNo = stringResource(R.string.head_gesture_no)
         val gestureUnavailable = stringResource(R.string.head_gesture_unavailable)
+        val gestureNoData = stringResource(R.string.head_tracking_no_data)
         StyledButton(
             onClick = {
+                if (testing) return@StyledButton
+                testing = true
+                shouldExplode = false
                 gestureText = gestureTextValue
                 coroutineScope.launch {
-                    gestureText = when (ServiceManager.getService()?.testHeadGestures()) {
-                        true -> gestureYes
-                        false -> gestureNo
-                        null -> gestureUnavailable
-                    }
+                    try {
+                        val service = ServiceManager.getService()
+                        gestureText = when (service?.testHeadGestures()) {
+                            true -> gestureYes
+                            false -> gestureNo
+                            null -> if (service?.headTrackingStatus?.value == HeadTrackingStatus.UNAVAILABLE)
+                                gestureNoData else gestureUnavailable
+                        }
+                    } finally { testing = false }
                 }
             },
             backdrop = backdrop,
+            enabled = !testing,
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp),

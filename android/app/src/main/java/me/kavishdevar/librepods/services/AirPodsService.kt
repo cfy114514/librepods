@@ -75,6 +75,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.ExperimentalCoroutinesApi
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.NonCancellable
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -362,10 +363,15 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private val headTrackingSession = serviceResources.track(HeadTrackingSession())
     private data class HeadTrackingRequest(
         val ticket: HeadTrackingSession.Ticket, val socket: BluetoothSocket, val deviceSession: Long,
-        val serviceGeneration: Long, val alternate: Boolean
+        val attempt: Long, val preferredAlternate: Boolean, val alternate: Boolean = preferredAlternate,
+        val retryOf: Long? = null
     )
     @Volatile private var appliedHeadTrackingRequest: HeadTrackingRequest? = null
     private val headTrackingBindingLock = Any()
+    private val headTrackingAttempts = AtomicLong()
+    private val headTrackingStartup = HeadTrackingStartup<HeadTrackingRequest>()
+    val headTrackingStatus = headTrackingStartup.status
+    private var headTrackingStartupJob: Job? = null
     private val headTrackingCommands = serviceResources.track(KeyedWorkSession<Unit, HeadTrackingRequest>(
         setOf(Unit), Dispatchers.IO, onError = { Log.w(TAG, "Head tracking command failed", it) },
         consume = ::writeHeadTrackingRequest))
@@ -1223,6 +1229,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 currentPacketPeer() ?: return
                 val applied = appliedHeadTrackingRequest
                 if (applied != null && applied.ticket.enabled && headTrackingRequestCurrent(applied)) {
+                    // AACP has validated the sensor payload length before this callback.
+                    headTrackingStartup.received(applied)
                     HeadTracking.processPacket(headTracking)
                     processHeadTrackingData(headTracking)
                 }
@@ -1783,6 +1791,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 if (previousHeadPeer != me.kavishdevar.librepods.data.batteryHistoryIdentity(macAddress)) HeadTracking.reset()
                 headTrackingSession.selectPeer(me.kavishdevar.librepods.data.batteryHistoryIdentity(macAddress))
                 appliedHeadTrackingRequest = null
+                headTrackingStartup.clear()
                 gestureDetector?.stopDetection()
                 audioProfileOwnership.select(macAddress)
                 retireControlForChangedPeer()
@@ -1809,7 +1818,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             "relative_conversational_awareness_volume" -> config.relativeConversationalAwarenessVolume =
                 preferences.getBoolean(key, true)
 
-            "head_gestures" -> config.headGestures = preferences.getBoolean(key, true)
+            "head_gestures" -> {
+                config.headGestures = preferences.getBoolean(key, true)
+                if (!config.headGestures) gestureDetector?.stopDetection()
+            }
+            "use_alternate_head_tracking_packets" -> applyHeadTrackingDesired(headTrackingSession.capture())
             "disconnect_when_not_wearing" -> config.disconnectWhenNotWearing =
                 preferences.getBoolean(key, false)
 
@@ -2335,6 +2348,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     ) {
         if (serviceResources.isClosed || ServiceManager.getService() !== this) return
         if (!connected) {
+            headTrackingStartup.clear()
             synchronized(this) {
                 notificationGeneration.incrementAndGet()
                 takeoverGeneration.incrementAndGet()
@@ -2382,18 +2396,20 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     suspend fun testHeadGestures(): Boolean? {
         initGestureDetector()
         val detector = gestureDetector ?: return null
-        return suspendCancellableCoroutine { continuation ->
-            if (!continuation.isActive) return@suspendCancellableCoroutine
-            val completed = AtomicBoolean(false)
-            fun finish(result: Boolean?) {
-                if (completed.compareAndSet(false, true) && continuation.isActive) continuation.resume(result)
-            }
-            val detection = detector.startDetection(onStopped = { finish(null) }) { accepted -> finish(accepted) }
-            if (detection == null) {
-                finish(null)
-            } else continuation.invokeOnCancellation {
-                completed.set(true)
-                detection.close()
+        return withTimeoutOrNull(15_000L) {
+            suspendCancellableCoroutine { continuation ->
+                if (!continuation.isActive) return@suspendCancellableCoroutine
+                val completed = AtomicBoolean(false)
+                fun finish(result: Boolean?) {
+                    if (completed.compareAndSet(false, true) && continuation.isActive) continuation.resume(result)
+                }
+                val detection = detector.startDetection(onStopped = { finish(null) }) { accepted -> finish(accepted) }
+                if (detection == null) {
+                    finish(null)
+                } else continuation.invokeOnCancellation {
+                    completed.set(true)
+                    detection.close()
+                }
             }
         }
     }
@@ -2895,7 +2911,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             else if (request.headTracking) launch(Dispatchers.Main) {
                 delay(500)
                 val ticket = request.headGeneration?.let(headTrackingSession::currentStart)
-                if (current() && ticket != null) enqueueHeadTrackingCommand(ticket)
+                if (current() && ticket != null) enqueueHeadTrackingCommand(ticket, restart = true)
             }
             delay(1000)
             if (current() && request.reason == "music") MediaController.sendPlay(force = true)
@@ -3620,6 +3636,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         cameraGeneration.incrementAndGet()
         cameraActive = false
         appliedHeadTrackingRequest = null
+        headTrackingStartup.clear()
         headTrackingSession.close()
         serviceResources.close()
         val retiredControl = ownedControlSocket.getAndSet(null)
@@ -3716,12 +3733,18 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     private fun applyHeadTrackingDesired(ticket: HeadTrackingSession.Ticket) {
         if (serviceResources.isClosed || !headTrackingSession.isCurrent(ticket)) return
+        if (!ticket.enabled) synchronized(headTrackingBindingLock) {
+            headTrackingStartupJob?.cancel()
+            headTrackingStartupJob = null
+            headTrackingStartup.clear()
+        }
         val alreadyApplied = synchronized(headTrackingBindingLock) {
             val applied = appliedHeadTrackingRequest
             if (applied != null && applied.ticket == ticket &&
-                applied.alternate == sharedPreferences.getBoolean("use_alternate_head_tracking_packets", true) &&
-                headTrackingRequestCurrent(applied)) true
-            else { appliedHeadTrackingRequest = null; false }
+                applied.preferredAlternate == sharedPreferences.getBoolean("use_alternate_head_tracking_packets", true) &&
+                headTrackingRequestCurrent(applied) &&
+                (!ticket.enabled || headTrackingStatus.value != HeadTrackingStatus.UNAVAILABLE)) true
+            else false
         }
         if (alreadyApplied) return
         if (ticket.enabled && aacpManager.getControlCommandStatus(AACPManager.Companion.ControlCommandIdentifiers.OWNS_CONNECTION)
@@ -3729,21 +3752,35 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         enqueueHeadTrackingCommand(ticket)
     }
 
-    private fun enqueueHeadTrackingCommand(ticket: HeadTrackingSession.Ticket) {
+    private fun enqueueHeadTrackingCommand(ticket: HeadTrackingSession.Ticket, restart: Boolean = false) {
         if (!headTrackingSession.isCurrent(ticket) || serviceResources.isClosed) return
         val applied = appliedHeadTrackingRequest
-        if (applied != null && applied.ticket == ticket &&
-            applied.alternate == sharedPreferences.getBoolean("use_alternate_head_tracking_packets", true) &&
-            headTrackingRequestCurrent(applied)) return
-        val socket = BluetoothConnectionManager.aacpSocket ?: return
+        if (!restart && applied != null && applied.ticket == ticket &&
+            applied.preferredAlternate == sharedPreferences.getBoolean("use_alternate_head_tracking_packets", true) &&
+            headTrackingRequestCurrent(applied) &&
+            (!ticket.enabled || headTrackingStatus.value != HeadTrackingStatus.UNAVAILABLE)) return
+        val socket = BluetoothConnectionManager.aacpSocket
+        if (socket == null || !isCurrentControlSocket(socket)) {
+            headTrackingStartup.clear(if (ticket.enabled) HeadTrackingStatus.UNAVAILABLE else HeadTrackingStatus.INACTIVE)
+            return
+        }
+        val preferred = sharedPreferences.getBoolean("use_alternate_head_tracking_packets", true)
+        // Use the matching stop packet after a successful automatic fallback. A restart
+        // on the same link also keeps the working variant instead of reselecting it.
+        val alternate = applied?.takeIf {
+            it.socket === socket && it.ticket.peer == ticket.peer && it.preferredAlternate == preferred &&
+                aacpManager.isCurrentDeviceSession(it.deviceSession)
+        }?.alternate ?: preferred
         val request = HeadTrackingRequest(ticket, socket, aacpManager.captureDeviceSession(),
-            takeoverGeneration.get(), sharedPreferences.getBoolean("use_alternate_head_tracking_packets", true))
+            headTrackingAttempts.incrementAndGet(), preferred, alternate)
         if (headTrackingRequestCurrent(request)) headTrackingCommands.offer(Unit, request)
     }
 
     private fun headTrackingRequestCurrent(request: HeadTrackingRequest): Boolean =
         !serviceResources.isClosed && !headTrackingCommands.isClosed && ServiceManager.getService() === this &&
-            headTrackingSession.isCurrent(request.ticket) && request.serviceGeneration == takeoverGeneration.get() &&
+            // Audio ownership notifications may revoke media restore without ending this sensor lease.
+            headTrackingSession.isCurrent(request.ticket) &&
+            request.preferredAlternate == sharedPreferences.getBoolean("use_alternate_head_tracking_packets", true) &&
             request.ticket.peer != null && request.ticket.peer == me.kavishdevar.librepods.data.batteryHistoryIdentity(
                 sharedPreferences.getString("mac_address", "") ?: "") &&
             aacpManager.isCurrentDeviceSession(request.deviceSession) && isCurrentControlSocket(request.socket)
@@ -3751,19 +3788,47 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private fun writeHeadTrackingRequest(request: HeadTrackingRequest) {
         if (!headTrackingRequestCurrent(request)) return
         if (appliedHeadTrackingRequest == request) return
+        if (request.retryOf != null && (appliedHeadTrackingRequest?.attempt != request.retryOf ||
+                headTrackingStatus.value == HeadTrackingStatus.RECEIVING)) return
         val data = if (request.ticket.enabled) {
             if (request.alternate) aacpManager.createAlternateStartHeadTrackingPacket() else aacpManager.createStartHeadTrackingPacket()
         } else {
             if (request.alternate) aacpManager.createAlternateStopHeadTrackingPacket() else aacpManager.createStopHeadTrackingPacket()
         }
-        if (!aacpManager.sendPacket(aacpManager.createDataPacket(data), request.socket) { headTrackingRequestCurrent(request) } ||
-            !headTrackingRequestCurrent(request)) return
+        val sent = aacpManager.sendPacket(aacpManager.createDataPacket(data), request.socket) { headTrackingRequestCurrent(request) }
+        if (!sent) {
+            if (headTrackingRequestCurrent(request)) {
+                if (request.ticket.enabled) headTrackingStartup.failed() else headTrackingStartup.clear()
+            }
+            return
+        }
+        if (!headTrackingRequestCurrent(request)) return
         // This short publication lock never covers socket output. Joining a consumer
         // cannot clear a successful publication between its check and assignment.
         synchronized(headTrackingBindingLock) {
             if (!headTrackingRequestCurrent(request)) return
             if (request.ticket.enabled) HeadTracking.reset()
             appliedHeadTrackingRequest = request
+            headTrackingStartupJob?.cancel()
+            headTrackingStartupJob = null
+            if (!request.ticket.enabled) headTrackingStartup.clear()
+            else {
+                headTrackingStartup.begin(request)
+                headTrackingStartupJob = serviceScope.launch {
+                    delay(2000)
+                    synchronized(headTrackingBindingLock) {
+                        if (appliedHeadTrackingRequest !== request || !headTrackingRequestCurrent(request)) return@launch
+                        if (headTrackingStartup.timedOut(request, canRetry = request.retryOf == null)) {
+                            Log.i(TAG, "No head tracking samples; trying the other start packet")
+                            val retry = request.copy(attempt = headTrackingAttempts.incrementAndGet(),
+                                alternate = !request.alternate, retryOf = request.attempt)
+                            headTrackingCommands.offer(Unit, retry)
+                        } else if (headTrackingStatus.value == HeadTrackingStatus.UNAVAILABLE) {
+                            Log.w(TAG, "Neither head tracking start packet produced sensor samples")
+                        }
+                    }
+                }
+            }
         }
     }
 

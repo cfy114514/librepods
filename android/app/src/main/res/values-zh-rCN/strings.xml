@@ -308,4 +308,8 @@
     <string name="music_volume_error">暂时无法控制音量，请重试。</string>
     <string name="local_settings_loading">正在加载设置…</string>
     <string name="local_settings_error">无法读取或保存设置，请重试以保存你的更改。</string>
+    <string name="head_tracking_starting">正在等待耳机的头部运动数据…</string>
+    <string name="head_tracking_receiving">已收到运动数据，可以点头或摇头测试。</string>
+    <string name="head_tracking_no_data">没有收到运动数据。请戴好耳机并重新连接，然后重试。</string>
+    <string name="head_tracking_inactive">头部追踪未启动。</string>
 </resources>

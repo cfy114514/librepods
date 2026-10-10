@@ -68,6 +68,7 @@ import me.kavishdevar.librepods.data.CustomEq
 import me.kavishdevar.librepods.data.StemAction
 import me.kavishdevar.librepods.data.RemoteXposedPreferences
 import me.kavishdevar.librepods.services.AirPodsService
+import me.kavishdevar.librepods.services.HeadTrackingStatus
 import me.kavishdevar.librepods.services.ServiceManager
 import me.kavishdevar.librepods.utils.KeyedWorkSession
 import me.kavishdevar.librepods.utils.InteractiveCommandQueue
@@ -100,6 +101,7 @@ data class AirPodsUiState(
 
     val headTrackingActive: Boolean = false,
     val headTrackingPeer: String? = null,
+    val headTrackingStatus: HeadTrackingStatus = HeadTrackingStatus.INACTIVE,
     val headGesturesEnabled: Boolean = true,
 
     val eqData: FloatArray = floatArrayOf(),
@@ -249,6 +251,8 @@ class AirPodsViewModel(
     private var headPreviewToken: Any? = null
     private var headPreviewRequested = false
     private var headPreviewLease: Closeable? = null
+    private var headPreviewStatusJob: Job? = null
+    private var headPreviewStatusToken: Any? = null
     private val customEqWriteKey = 256
 
     var isReady by mutableStateOf(false)
@@ -373,6 +377,9 @@ class AirPodsViewModel(
             headPreviewRequested = false
             headPreviewLease?.close()
             headPreviewLease = null
+            headPreviewStatusToken = null
+            headPreviewStatusJob?.cancel()
+            headPreviewStatusJob = null
         }
         clearObservers()
         super.onCleared()
@@ -880,7 +887,22 @@ class AirPodsViewModel(
         previous?.close()
         val peer = if (::sharedPreferences.isInitialized) me.kavishdevar.librepods.data.batteryHistoryIdentity(
             sharedPreferences.getString("mac_address", "") ?: "") else null
-        _uiState.update { it.copy(headTrackingActive = headPreviewRequested, headTrackingPeer = peer) }
+        val owner = if (::service.isInitialized && !isDemoMode && headPreviewRequested) service else null
+        headPreviewStatusJob?.cancel()
+        val statusToken = Any()
+        headPreviewStatusToken = statusToken
+        _uiState.update { it.copy(headTrackingActive = headPreviewRequested, headTrackingPeer = peer,
+            headTrackingStatus = owner?.headTrackingStatus?.value ?: HeadTrackingStatus.INACTIVE) }
+        headPreviewStatusJob = owner?.let {
+            viewModelScope.launch {
+                it.headTrackingStatus.collect { status ->
+                    synchronized(this@AirPodsViewModel) {
+                        if (headPreviewStatusToken === statusToken && service === owner && headPreviewRequested)
+                            _uiState.update { state -> state.copy(headTrackingStatus = status) }
+                    }
+                }
+            }
+        }
     }
 
     fun setATTCharacteristicValue(handle: ATTHandles, value: ByteArray) {
