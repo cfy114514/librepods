@@ -16,8 +16,6 @@
     along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-@file:Suppress("PrivatePropertyName")
-
 package me.kavishdevar.librepods.utils
 
 import android.content.Context
@@ -26,11 +24,16 @@ import android.media.SoundPool
 import android.os.SystemClock
 import android.util.Log
 import me.kavishdevar.librepods.R
+import me.kavishdevar.librepods.BuildConfig
 import java.util.concurrent.atomic.AtomicBoolean
 
 class GestureFeedback(context: Context) {
 
-    private val TAG = "GestureFeedback"
+    private companion object {
+        const val TAG = "GestureFeedback"
+        const val MIN_TIME_BETWEEN_SOUNDS = 150L
+        const val MIN_TIME_BETWEEN_DIRECTION = 200L
+    }
 
     private val soundsLoaded = AtomicBoolean(false)
     private var released = false
@@ -52,24 +55,15 @@ class GestureFeedback(context: Context) {
     private var confirmYesId = 0
     private var confirmNoId = 0
 
-    private var lastHorizontalTime = 0L
-    private var lastLeftTime = 0L
-    private var lastRightTime = 0L
+    private class AxisFeedback {
+        var lastSoundTime = 0L
+        var lastPositiveTime = 0L
+        var lastNegativeTime = 0L
+        var streamId = 0
+    }
 
-    private var lastVerticalTime = 0L
-    private var lastUpTime = 0L
-    private var lastDownTime = 0L
-
-    private val MIN_TIME_BETWEEN_SOUNDS = 150L
-    private val MIN_TIME_BETWEEN_DIRECTION = 200L
-
-    private var currentHorizontalStreamId = 0
-    private var currentVerticalStreamId = 0
-
-
-    private val LEFT_VOLUME = Pair(1.0f, 0.0f)
-    private val RIGHT_VOLUME = Pair(0.0f, 1.0f)
-    private val VERTICAL_VOLUME = Pair(1.0f, 1.0f)
+    private val horizontal = AxisFeedback()
+    private val vertical = AxisFeedback()
 
     init {
         soundPool.setOnLoadCompleteListener { _, sampleId, status ->
@@ -77,7 +71,7 @@ class GestureFeedback(context: Context) {
                 if (!released && status == 0) {
                     loadedSoundIds.add(sampleId)
                     if (loadedSoundIds.size == 3 && soundsLoaded.compareAndSet(false, true)) {
-                        Log.d(TAG, "Sounds loaded")
+                        if (BuildConfig.DEBUG) Log.d(TAG, "Sounds loaded")
                         soundPool.play(soundId, 0.0f, 0.0f, 1, 0, 1.0f)
                     }
                 }
@@ -91,92 +85,49 @@ class GestureFeedback(context: Context) {
     @Synchronized
     fun playDirectional(isVertical: Boolean, value: Double) {
         if (released || !soundsLoaded.get()) {
-            Log.d(TAG, "Sounds not yet loaded, skipping playback")
+            if (BuildConfig.DEBUG) Log.d(TAG, "Sounds not yet loaded, skipping playback")
             return
         }
 
         val now = SystemClock.uptimeMillis()
 
-        if (isVertical) {
-            val isUp = value > 0
+        val axis = if (isVertical) vertical else horizontal
+        val positive = value > 0
+        if (now - axis.lastSoundTime < MIN_TIME_BETWEEN_SOUNDS) {
+            if (BuildConfig.DEBUG) Log.d(TAG, "Skipping ${if (isVertical) "vertical" else "horizontal"} sound due to general debounce")
+            return
+        }
+        val lastDirectionTime = if (positive) axis.lastPositiveTime else axis.lastNegativeTime
+        if (now - lastDirectionTime < MIN_TIME_BETWEEN_DIRECTION) {
+            if (BuildConfig.DEBUG) Log.d(TAG, "Skipping ${directionName(isVertical, positive)} sound due to direction debounce")
+            return
+        }
 
-            if (now - lastVerticalTime < MIN_TIME_BETWEEN_SOUNDS) {
-                Log.d(TAG, "Skipping vertical sound due to general vertical debounce")
-                return
-            }
+        if (axis.streamId > 0) soundPool.stop(axis.streamId)
+        val leftVolume = if (isVertical || !positive) 1.0f else 0.0f
+        val rightVolume = if (isVertical || positive) 1.0f else 0.0f
+        axis.streamId = soundPool.play(soundId, leftVolume, rightVolume, 1, 0, 1.0f)
+        if (BuildConfig.DEBUG) Log.d(TAG, "Playing ${if (isVertical) "VERTICAL" else "HORIZONTAL"} sound: ${directionName(isVertical, positive)} - streamID=${axis.streamId}")
+        axis.lastSoundTime = now
+        if (positive) axis.lastPositiveTime = now else axis.lastNegativeTime = now
+    }
 
-            if (isUp && now - lastUpTime < MIN_TIME_BETWEEN_DIRECTION) {
-                Log.d(TAG, "Skipping UP sound due to direction debounce")
-                return
-            }
+    private fun directionName(isVertical: Boolean, positive: Boolean): String =
+        if (isVertical) { if (positive) "UP" else "DOWN" }
+        else { if (positive) "RIGHT" else "LEFT" }
 
-            if (!isUp && now - lastDownTime < MIN_TIME_BETWEEN_DIRECTION) {
-                Log.d(TAG, "Skipping DOWN sound due to direction debounce")
-                return
-            }
-
-            if (currentVerticalStreamId > 0) {
-                soundPool.stop(currentVerticalStreamId)
-            }
-
-            val (leftVol, rightVol) = VERTICAL_VOLUME
-
-            currentVerticalStreamId = soundPool.play(soundId, leftVol, rightVol, 1, 0, 1.0f)
-            Log.d(TAG, "Playing VERTICAL sound: ${if (isUp) "UP" else "DOWN"} - streamID=$currentVerticalStreamId")
-
-            lastVerticalTime = now
-            if (isUp) {
-                lastUpTime = now
-            } else {
-                lastDownTime = now
-            }
-        } else {
-            if (now - lastHorizontalTime < MIN_TIME_BETWEEN_SOUNDS) {
-                Log.d(TAG, "Skipping horizontal sound due to general horizontal debounce")
-                return
-            }
-
-            val isRight = value > 0
-
-            if (isRight && now - lastRightTime < MIN_TIME_BETWEEN_DIRECTION) {
-                Log.d(TAG, "Skipping RIGHT sound due to direction debounce")
-                return
-            }
-
-            if (!isRight && now - lastLeftTime < MIN_TIME_BETWEEN_DIRECTION) {
-                Log.d(TAG, "Skipping LEFT sound due to direction debounce")
-                return
-            }
-
-            if (currentHorizontalStreamId > 0) {
-                soundPool.stop(currentHorizontalStreamId)
-            }
-
-            val (leftVol, rightVol) = if (isRight) RIGHT_VOLUME else LEFT_VOLUME
-
-            currentHorizontalStreamId = soundPool.play(soundId, leftVol, rightVol, 1, 0, 1.0f)
-            Log.d(TAG, "Playing HORIZONTAL sound: ${if (isRight) "RIGHT" else "LEFT"} - streamID=$currentHorizontalStreamId")
-
-            lastHorizontalTime = now
-            if (isRight) {
-                lastRightTime = now
-            } else {
-                lastLeftTime = now
-            }
+    private fun stopAxis(axis: AxisFeedback) {
+        if (axis.streamId > 0) {
+            soundPool.stop(axis.streamId)
+            axis.streamId = 0
         }
     }
 
     @Synchronized
     fun stopDirectional() {
         if (released) return
-        if (currentHorizontalStreamId > 0) {
-            soundPool.stop(currentHorizontalStreamId)
-            currentHorizontalStreamId = 0
-        }
-        if (currentVerticalStreamId > 0) {
-            soundPool.stop(currentVerticalStreamId)
-            currentVerticalStreamId = 0
-        }
+        stopAxis(horizontal)
+        stopAxis(vertical)
     }
 
     @Synchronized
@@ -187,7 +138,7 @@ class GestureFeedback(context: Context) {
         val soundId = if (isYes) confirmYesId else confirmNoId
         if (soundId != 0 && soundsLoaded.get()) {
             val streamId = soundPool.play(soundId, 1.0f, 1.0f, 1, 0, 1.0f)
-            Log.d(TAG, "Playing ${if (isYes) "YES" else "NO"} confirmation - streamID=$streamId")
+            if (BuildConfig.DEBUG) Log.d(TAG, "Playing ${if (isYes) "YES" else "NO"} confirmation - streamID=$streamId")
         }
     }
 
@@ -199,7 +150,7 @@ class GestureFeedback(context: Context) {
         soundPool.setOnLoadCompleteListener(null)
         soundPool.release()
         loadedSoundIds.clear()
-        currentHorizontalStreamId = 0
-        currentVerticalStreamId = 0
+        horizontal.streamId = 0
+        vertical.streamId = 0
     }
 }

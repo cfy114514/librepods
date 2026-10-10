@@ -204,6 +204,10 @@ half4 main(float2 coord) {
                     null
                 }
             }
+            val interactiveHighlightBrush = remember(interactiveHighlightShader) {
+                interactiveHighlightShader?.let { ShaderBrush(it) }
+            }
+
             val isDarkTheme = isSystemInDarkTheme()
             TextButton(
                 onClick = {
@@ -313,7 +317,7 @@ half4 main(float2 coord) {
                             if (!enabled) return@drawBackdrop
                             val progress = progressAnimation.value.fastCoerceIn(0f, 1f)
                             if (progress > 0f) {
-                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && interactiveHighlightShader != null) {
+                                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && interactiveHighlightShader != null && interactiveHighlightBrush != null) {
                                     drawRect(
                                         Color.White.copy(0.1f * progress),
                                         blendMode = BlendMode.Plus
@@ -333,7 +337,7 @@ half4 main(float2 coord) {
                                         )
                                     }
                                     drawRect(
-                                        ShaderBrush(interactiveHighlightShader),
+                                        interactiveHighlightBrush,
                                         blendMode = BlendMode.Plus
                                     )
                                 } else {

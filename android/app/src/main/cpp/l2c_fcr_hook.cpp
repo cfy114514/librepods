@@ -17,7 +17,9 @@
 */
 
 #include <android/log.h>
+#include <android/api-level.h>
 #include <cstring>
+#include <cinttypes>
 #include <string>
 #include <vector>
 #include <fcntl.h>
@@ -28,6 +30,7 @@
 #include <jni.h>
 
 #include "l2c_fcr_hook.h"
+#include "l2cap_policy.h"
 
 extern "C" {
 #include "xz.h"
@@ -44,15 +47,19 @@ static uint8_t (*original_l2c_fcr_chk_chan_modes)(void *) = nullptr;
 static tBTA_STATUS (*original_BTA_DmSetLocalDiRecord)(tSDP_DI_RECORD *, uint32_t *) = nullptr;
 
 static std::atomic<bool> enableSdpHook(false);
+static std::atomic<bool> forceLegacyL2capWorkaround(false);
+
+static int deviceApiLevel() {
+    static const int level = android_get_device_api_level();
+    return level;
+}
 
 uint8_t fake_l2c_fcr_chk_chan_modes(void *p_ccb) {
-    LOGI("fake_l2c_fcr_chk_chan_modes called");
     uint8_t orig = 0;
     if (original_l2c_fcr_chk_chan_modes)
         orig = original_l2c_fcr_chk_chan_modes(p_ccb);
 
-    LOGI("fake_l2c_fcr_chk_chan_modes: orig = %d, returning 1", orig);
-    return 1;
+    return use_l2cap_workaround(deviceApiLevel(), forceLegacyL2capWorkaround.load(std::memory_order_relaxed)) ? 1 : orig;
 }
 
 tBTA_STATUS fake_BTA_DmSetLocalDiRecord(tSDP_DI_RECORD *p_device_info, uint32_t *p_handle) {
@@ -187,7 +194,7 @@ static uintptr_t getModuleBase(const char *name) {
     while (fgets(line, sizeof(line), fp)) {
         if (strstr(line, name)) {
             base = strtoull(line, nullptr, 16);
-            LOGI("getModuleBase: found base at 0x%lx", base);
+            LOGI("getModuleBase: found base at 0x%" PRIxPTR, base);
             break;
         }
     }
@@ -423,7 +430,8 @@ extern "C" [[gnu::visibility("default")]]
 NativeOnModuleLoaded native_init(const NativeAPIEntries *entries) {
     LOGI("native_init called with entries: %p", entries);
     hook_func = (HookFunType) entries->hook_func;
-    LOGI("LibrePodsNativeHook initialized, sdp hook enabled: %d",
+    LOGI("LibrePodsNativeHook initialized, API %d, legacy L2CAP workaround: %d, sdp hook: %d",
+         deviceApiLevel(), use_l2cap_workaround(deviceApiLevel(), forceLegacyL2capWorkaround.load(std::memory_order_relaxed)),
          enableSdpHook.load(std::memory_order_relaxed));
     return on_library_loaded;
 }
@@ -435,4 +443,12 @@ Java_me_kavishdevar_librepods_utils_NativeBridge_setSdpHook(JNIEnv *, jobject th
     enableSdpHook.store(enable, std::memory_order_relaxed);
 
     LOGI("sdp hook enabled: %d", enable);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_me_kavishdevar_librepods_utils_NativeBridge_setForceLegacyL2capWorkaround(JNIEnv *, jobject,
+                                                                          jboolean force) {
+    forceLegacyL2capWorkaround.store(force, std::memory_order_relaxed);
+    LOGI("legacy L2CAP workaround: %d (API %d, forced: %d)",
+         use_l2cap_workaround(deviceApiLevel(), force), deviceApiLevel(), force);
 }

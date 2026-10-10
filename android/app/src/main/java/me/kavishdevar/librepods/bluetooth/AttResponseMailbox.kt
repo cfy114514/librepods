@@ -6,7 +6,7 @@ import java.util.concurrent.atomic.AtomicReference
 
 /** Holds only the reply to the one ATT request currently in flight. */
 internal class AttResponseMailbox {
-    internal class PendingResponse internal constructor(val opcode: Byte) {
+    internal class PendingResponse internal constructor(val opcode: Byte, val requestOpcode: Byte?) {
         private val reply = ArrayBlockingQueue<ByteArray>(1)
 
         @Volatile
@@ -31,15 +31,18 @@ internal class AttResponseMailbox {
 
     private val pending = AtomicReference<PendingResponse?>()
 
-    fun expect(opcode: Byte): PendingResponse {
-        val response = PendingResponse(opcode)
+    fun expect(opcode: Byte, requestOpcode: Byte? = null): PendingResponse {
+        val response = PendingResponse(opcode, requestOpcode)
         check(pending.compareAndSet(null, response)) { "An ATT request is already pending" }
         return response
     }
 
     fun offer(data: ByteArray) {
         val response = pending.get() ?: return
-        if (data.isNotEmpty() && data[0] == response.opcode) response.offer(data)
+        if (data.isNotEmpty() && (data[0] == response.opcode ||
+                (data.size == 5 && data[0] == 0x01.toByte() && data[1] == response.requestOpcode))) {
+            response.offer(data)
+        }
     }
 
     fun finish(response: PendingResponse) {

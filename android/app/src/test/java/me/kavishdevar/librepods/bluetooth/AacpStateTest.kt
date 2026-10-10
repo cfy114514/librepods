@@ -12,6 +12,16 @@ import org.junit.Assert.assertTrue
 import org.junit.Test
 
 class AacpStateTest {
+    @Test fun callerAndSnapshotMutationsCannotCorruptStoredDeviceState() {
+        val manager = AACPManager()
+        val id = ControlCommandIdentifiers.LISTENING_MODE
+        val sent = byteArrayOf(2)
+        manager.setControlCommandStatusValue(id, sent)
+        sent[0] = 3
+        manager.getControlCommandStatus(id)!!.value[0] = 4
+        manager.getControlCommandStatusSnapshot()[0].value[0] = 1
+        assertArrayEquals(byteArrayOf(2), manager.getControlCommandStatus(id)!!.value)
+    }
     @Test fun changingCommandsKeepOnlyTheLatestValueForEachIdentifier() {
         val manager = AACPManager()
         val identifiers = ControlCommandIdentifiers.entries

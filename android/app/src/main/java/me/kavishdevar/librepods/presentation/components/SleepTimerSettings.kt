@@ -22,16 +22,21 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.snapshotFlow
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalInspectionMode
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
@@ -40,10 +45,16 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.kyant.backdrop.backdrops.rememberLayerBackdrop
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
+import android.content.SharedPreferences
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.collectLatest
 import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.presentation.theme.LibrePodsTheme
 import me.kavishdevar.librepods.utils.SleepTimerManager
+import me.kavishdevar.librepods.utils.sleepTimerRefreshDelay
 
 @Composable
 fun SleepTimerSettings(
@@ -53,24 +64,58 @@ fun SleepTimerSettings(
     onStartTimer: (Int, Int) -> Long,
     onCancelTimer: () -> Unit,
     initiallyOpen: Boolean = false,
+    availableModes: List<Int> = listOf(1, 3, 4, 2),
 ) {
     var timerEndAt by remember(endAt) { mutableLongStateOf(endAt) }
-    var activeTargetMode by remember(targetMode) { mutableStateOf(targetMode) }
+    var activeTargetMode by remember(targetMode) { mutableIntStateOf(targetMode) }
     var now by remember { mutableLongStateOf(System.currentTimeMillis()) }
     var showSheet by remember(initiallyOpen) { mutableStateOf(initiallyOpen) }
-    var selectedMode by remember(targetMode) { mutableStateOf(targetMode) }
+    var selectedMode by remember(targetMode) { mutableIntStateOf(targetMode) }
     var durationText by remember { mutableStateOf("90") }
+    val context = LocalContext.current
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val preview = LocalInspectionMode.current
+    var awaitingDelivery by remember { mutableStateOf(false) }
+    LaunchedEffect(availableModes, selectedMode) {
+        if (selectedMode !in availableModes) selectedMode = availableModes.firstOrNull() ?: 0
+    }
 
-    LaunchedEffect(timerEndAt) {
-        while (timerEndAt > 0L && timerEndAt > System.currentTimeMillis()) {
-            now = System.currentTimeMillis()
-            delay(1000L)
+    DisposableEffect(context, lifecycle, preview) {
+        val prefs = if (preview) null else context.getSharedPreferences("settings", android.content.Context.MODE_PRIVATE)
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key?.startsWith("sleep_timer_") == true && lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)) {
+                timerEndAt = SleepTimerManager.endAt(context)
+                activeTargetMode = SleepTimerManager.targetMode(context)
+                awaitingDelivery = SleepTimerManager.isAwaitingDelivery(context)
+                now = System.currentTimeMillis()
+            }
         }
-        if (timerEndAt > 0L) timerEndAt = 0L
+        prefs?.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { prefs?.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
+
+    LaunchedEffect(lifecycle, preview) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            if (!preview) {
+                timerEndAt = SleepTimerManager.endAt(context)
+                activeTargetMode = SleepTimerManager.targetMode(context)
+                awaitingDelivery = SleepTimerManager.isAwaitingDelivery(context)
+            }
+            snapshotFlow { timerEndAt }.collectLatest { deadline ->
+                while (true) {
+                    now = System.currentTimeMillis()
+                    val pause = sleepTimerRefreshDelay(deadline, now)
+                    if (pause == 0L) break
+                    delay(pause)
+                }
+            }
+        }
     }
 
     val isActive = timerEndAt > now
-    val description = if (isActive) {
+    val description = if (isActive && awaitingDelivery) {
+        stringResource(R.string.sleep_timer_waiting_connection)
+    } else if (isActive) {
         val minutes = SleepTimerManager.remainingMinutes(timerEndAt, now)
         if (minutes >= 60) {
             stringResource(
@@ -115,7 +160,7 @@ fun SleepTimerSettings(
                 opaque = true
             ) { _, _ ->
             val duration = durationText.toIntOrNull()
-            val canStart = duration != null && duration in 1..(24 * 60)
+            val canStart = duration != null && duration in 1..(24 * 60) && selectedMode in availableModes
 
             Column(
                 modifier = Modifier
@@ -252,7 +297,7 @@ fun SleepTimerSettings(
                         .padding(4.dp),
                     horizontalArrangement = Arrangement.spacedBy(2.dp)
                 ) {
-                    listOf(1, 3, 4, 2).forEach { mode ->
+                    availableModes.forEach { mode ->
                         val selected = selectedMode == mode
                         Box(
                             modifier = Modifier

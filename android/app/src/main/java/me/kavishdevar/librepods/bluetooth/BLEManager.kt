@@ -29,7 +29,9 @@ import android.content.Context
 import android.content.SharedPreferences
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import android.util.Log
+import java.util.concurrent.ConcurrentHashMap
 import kotlin.collections.iterator
 
 /**
@@ -39,7 +41,8 @@ class BLEManager(private val context: Context) {
 
     data class AirPodsStatus(
         val address: String,
-        val lastSeen: Long = System.currentTimeMillis(),
+        val ownerAddress: String? = null,
+        val lastSeen: Long = SystemClock.elapsedRealtime(),
         val paired: Boolean = false,
         val model: String = "Unknown",
         val leftBattery: Int? = null,
@@ -54,9 +57,15 @@ class BLEManager(private val context: Context) {
         val color: String = "Unknown",
         val connectionState: String = "Unknown"
     ) {
+        internal fun hasSameBatteryAs(other: AirPodsStatus): Boolean =
+            ownerAddress == other.ownerAddress && leftBattery == other.leftBattery &&
+                rightBattery == other.rightBattery && caseBattery == other.caseBattery &&
+                isLeftCharging == other.isLeftCharging && isRightCharging == other.isRightCharging &&
+                isCaseCharging == other.isCaseCharging
         /** Reception time keeps the device alive, but is not a device state change. */
         internal fun hasSameStateAs(other: AirPodsStatus): Boolean =
             address == other.address &&
+                ownerAddress == other.ownerAddress &&
                 paired == other.paired &&
                 model == other.model &&
                 leftBattery == other.leftBattery &&
@@ -73,10 +82,17 @@ class BLEManager(private val context: Context) {
     }
 
     fun getMostRecentStatus(): AirPodsStatus? {
-        return deviceStatusMap.values.maxByOrNull { it.lastSeen }
+        if (mScanCallback == null) return null
+        if (statusIrk != sharedPreferences.getString(AACPManager.Companion.ProximityKeyType.IRK.name, null)) return null
+        val selected = sharedPreferences.getString("mac_address", "") ?: ""
+        return deviceStatusMap.values.maxByOrNull { it.lastSeen }?.takeIf {
+            SystemClock.elapsedRealtime() - it.lastSeen <= STALE_DEVICE_TIMEOUT_MS &&
+                (it.ownerAddress == null || it.ownerAddress.equals(selected, ignoreCase = true))
+        }
     }
 
     interface AirPodsStatusListener {
+        fun onBatteryObserved(device: AirPodsStatus) {}
         fun onDeviceStatusChanged(device: AirPodsStatus, previousStatus: AirPodsStatus?)
         fun onBroadcastFromNewAddress(device: AirPodsStatus)
         fun onLidStateChanged(lidOpen: Boolean)
@@ -86,9 +102,10 @@ class BLEManager(private val context: Context) {
     }
 
     private var mBluetoothLeScanner: BluetoothLeScanner? = null
-    private var mScanCallback: ScanCallback? = null
-    private var airPodsStatusListener: AirPodsStatusListener? = null
-    private val deviceStatusMap = mutableMapOf<String, AirPodsStatus>()
+    @Volatile private var mScanCallback: ScanCallback? = null
+    @Volatile private var airPodsStatusListener: AirPodsStatusListener? = null
+    private val deviceStatusMap = ConcurrentHashMap<String, AirPodsStatus>()
+    @Volatile private var statusIrk: String? = null
     private val sharedPreferences: SharedPreferences = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
     private val rpaVerifier = CachedRpaVerifier(onInvalidKey = { Log.e(TAG, "Invalid IRK", it) })
     private val proximityDecryptor = CachedProximityDecryptor(onError = {
@@ -97,8 +114,6 @@ class BLEManager(private val context: Context) {
     private var currentGlobalLidState: Boolean? = null
     private var lastBroadcastTime: Long = 0
     private val advertisementDeduplicator = BleAdvertisementDeduplicator()
-
-    private val lastValidCaseBatteryMap = mutableMapOf<String, Int>()
 
     val colorNames = mapOf(
         0x00 to "White", 0x01 to "Black", 0x02 to "Red", 0x03 to "Blue",
@@ -128,7 +143,7 @@ class BLEManager(private val context: Context) {
 
     @SuppressLint("MissingPermission")
     fun startScanning() {
-        cleanupTask.stop()
+        stopScanning()
         try {
             Log.d(TAG, "Starting BLE scanner")
 
@@ -138,11 +153,6 @@ class BLEManager(private val context: Context) {
             if (btAdapter == null) {
                 Log.d(TAG, "No Bluetooth adapter available")
                 return
-            }
-
-            if (mBluetoothLeScanner != null && mScanCallback != null) {
-                mBluetoothLeScanner?.stopScan(mScanCallback)
-                mScanCallback = null
             }
 
             if (!btAdapter.isEnabled) {
@@ -175,19 +185,25 @@ class BLEManager(private val context: Context) {
 
             mScanCallback = object : ScanCallback() {
                 override fun onScanResult(callbackType: Int, result: ScanResult) {
+                    if (mScanCallback !== this) return
                     processScanResult(result)
                 }
 
                 override fun onBatchScanResults(results: List<ScanResult>) {
+                    if (mScanCallback !== this) return
                     advertisementDeduplicator.inBatch {
-                        for (result in results) {
+                        // Keep the newest state for each address in this batch.
+                        for (result in results.sortedByDescending { it.timestampNanos }) {
+                            if (mScanCallback !== this) break
                             processScanResult(result)
                         }
                     }
                 }
 
                 override fun onScanFailed(errorCode: Int) {
-                    if (mScanCallback === this) cleanupTask.stop()
+                    if (mScanCallback !== this) return
+                    mScanCallback = null
+                    cleanupTask.stop()
                     Log.e(TAG, "BLE scan failed with error code: $errorCode")
                 }
             }
@@ -197,6 +213,9 @@ class BLEManager(private val context: Context) {
 
             cleanupTask.start()
         } catch (t: Throwable) {
+            mScanCallback = null
+            mBluetoothLeScanner = null
+            cleanupTask.stop()
             Log.e(TAG, "Error starting BLE scanner", t)
         }
     }
@@ -204,11 +223,15 @@ class BLEManager(private val context: Context) {
     @SuppressLint("MissingPermission")
     fun stopScanning() {
         cleanupTask.stop()
+        val callback = mScanCallback
+        val scanner = mBluetoothLeScanner
+        // Invalidate even if stopScan fails after permission/adapter changes.
+        mScanCallback = null
+        mBluetoothLeScanner = null
         try {
-            if (mBluetoothLeScanner != null && mScanCallback != null) {
+            if (scanner != null && callback != null) {
                 Log.d(TAG, "Stopping BLE scanner")
-                mBluetoothLeScanner?.stopScan(mScanCallback)
-                mScanCallback = null
+                scanner.stopScan(callback)
             }
 
         } catch (t: Throwable) {
@@ -235,23 +258,35 @@ class BLEManager(private val context: Context) {
             if (!AirPodsProximityModels.isValid(manufacturerData)) return
 
             val irkBase64 = sharedPreferences.getString(AACPManager.Companion.ProximityKeyType.IRK.name, null)
+            val irkOwner = sharedPreferences.getString("IRK_owner", null)
+            if (irkOwner != null && !irkOwner.equals(sharedPreferences.getString("mac_address", ""), ignoreCase = true)) return
+            if (statusIrk != irkBase64) {
+                deviceStatusMap.clear()
+                currentGlobalLidState = null
+                statusIrk = irkBase64
+            }
             if (!rpaVerifier.verify(address, irkBase64)) return
 
             advertisementDeduplicator.markProcessed(address)
-            lastBroadcastTime = System.currentTimeMillis()
+            lastBroadcastTime = SystemClock.elapsedRealtime()
 
-            val encryptionKey = sharedPreferences.getString(AACPManager.Companion.ProximityKeyType.ENC_KEY.name, null)
+            val storedEncryptionKey = sharedPreferences.getString(AACPManager.Companion.ProximityKeyType.ENC_KEY.name, null)
+            val encryptionOwner = sharedPreferences.getString("ENC_KEY_owner", null)
+            val encryptionKey = if (irkOwner != null && encryptionOwner != null && !irkOwner.equals(encryptionOwner, ignoreCase = true))
+                null else storedEncryptionKey
             val decryptedData = proximityDecryptor.decryptLastBlock(manufacturerData, encryptionKey)
-            val parsedStatus = if (decryptedData != null && decryptedData.size == 16) {
+            val parsedStatus = (if (decryptedData != null && decryptedData.size == 16) {
                 parseProximityMessageWithDecryption(address, manufacturerData, decryptedData)
             } else {
                 parseProximityMessage(address, manufacturerData)
-            }
+            }).copy(ownerAddress = irkOwner)
+            if (irkBase64 != sharedPreferences.getString(AACPManager.Companion.ProximityKeyType.IRK.name, null)) return
 
             val previousStatus = deviceStatusMap[address]
             deviceStatusMap[address] = parsedStatus
 
             airPodsStatusListener?.let { listener ->
+                listener.onBatteryObserved(parsedStatus)
                 if (previousStatus == null) {
                     listener.onBroadcastFromNewAddress(parsedStatus)
                     Log.d(TAG, "New AirPods device detected: $address")
@@ -288,7 +323,10 @@ class BLEManager(private val context: Context) {
 
                     if (parsedStatus.leftBattery != previousStatus.leftBattery ||
                         parsedStatus.rightBattery != previousStatus.rightBattery ||
-                        parsedStatus.caseBattery != previousStatus.caseBattery) {
+                        parsedStatus.caseBattery != previousStatus.caseBattery ||
+                        parsedStatus.isLeftCharging != previousStatus.isLeftCharging ||
+                        parsedStatus.isRightCharging != previousStatus.isRightCharging ||
+                        parsedStatus.isCaseCharging != previousStatus.isCaseCharging) {
                         listener.onBatteryChanged(parsedStatus)
                         Log.d(TAG, "Battery changed - Left: ${parsedStatus.leftBattery}, Right: ${parsedStatus.rightBattery}, Case: ${parsedStatus.caseBattery}")
                     }
@@ -307,7 +345,7 @@ class BLEManager(private val context: Context) {
 //        val flagsCase = data[7].toInt() and 0xFF
         val lid = data[8].toInt() and 0xFF
         val color = colorNames[data[9].toInt()] ?: "Unknown"
-        val conn = connStates[data[10].toInt()] ?: "Unknown (${data[10].toInt()})"
+        val conn = connStates[data[10].toInt() and 0xFF] ?: "Unknown (${data[10].toInt()})"
 
         val primaryLeft = ((status shr 5) and 0x01) == 1
         val thisInCase = ((status shr 6) and 0x01) == 1
@@ -321,24 +359,22 @@ class BLEManager(private val context: Context) {
         val leftByteIndex = if (isFlipped) 2 else 1
         val rightByteIndex = if (isFlipped) 1 else 2
 
-        val (isLeftCharging, leftBattery) = formatBattery(decrypted[leftByteIndex].toInt() and 0xFF)
-        val (isRightCharging, rightBattery) = formatBattery(decrypted[rightByteIndex].toInt() and 0xFF)
+        val (isLeftCharging, rawLeftBattery) = formatBattery(decrypted[leftByteIndex].toInt() and 0xFF)
+        val (isRightCharging, rawRightBattery) = formatBattery(decrypted[rightByteIndex].toInt() and 0xFF)
+        val leftBattery = rawLeftBattery.takeIf { it in 0..100 }
+        val rightBattery = rawRightBattery.takeIf { it in 0..100 }
 
         val rawCaseBatteryByte = decrypted[3].toInt() and 0xFF
         val (isCaseCharging, rawCaseBattery) = formatBattery(rawCaseBatteryByte)
 
-        val caseBattery = if (rawCaseBatteryByte == 0xFF || (isCaseCharging && rawCaseBattery == 127)) {
-            lastValidCaseBatteryMap[address]
-        } else {
-            lastValidCaseBatteryMap[address] = rawCaseBattery
-            rawCaseBattery
-        }
+        // Unavailable case reports must not refresh the age of an old percentage.
+        val caseBattery = rawCaseBattery.takeIf { it in 0..100 }
 
         val lidOpen = ((lid shr 3) and 0x01) == 0
 
         return AirPodsStatus(
             address = address,
-            lastSeen = System.currentTimeMillis(),
+            lastSeen = SystemClock.elapsedRealtime(),
             paired = paired,
             model = model,
             leftBattery = leftBattery,
@@ -356,14 +392,14 @@ class BLEManager(private val context: Context) {
     }
 
     private fun cleanupStaleDevices() {
-        val now = System.currentTimeMillis()
+        val now = SystemClock.elapsedRealtime()
         val staleCutoff = now - STALE_DEVICE_TIMEOUT_MS
         val hadDevices = deviceStatusMap.isNotEmpty()
 
         val staleDevices = deviceStatusMap.filter { it.value.lastSeen < staleCutoff }
 
         for (device in staleDevices) {
-            deviceStatusMap.remove(device.key)
+            if (!deviceStatusMap.remove(device.key, device.value)) continue
             Log.d(TAG, "Removed stale device from tracking: ${device.key}")
         }
 
@@ -373,7 +409,7 @@ class BLEManager(private val context: Context) {
     }
 
     private fun checkLidStateTimeout() {
-        val currentTime = System.currentTimeMillis()
+        val currentTime = SystemClock.elapsedRealtime()
         if (currentTime - lastBroadcastTime > LID_CLOSE_TIMEOUT_MS && currentGlobalLidState == true) {
             Log.d(TAG, "No broadcasts for ${LID_CLOSE_TIMEOUT_MS}ms, forcing lid state to closed")
             currentGlobalLidState = false
@@ -390,7 +426,7 @@ class BLEManager(private val context: Context) {
         val flagsCase = data[7].toInt() and 0xFF
         val lid = data[8].toInt() and 0xFF
         val color = colorNames[data[9].toInt()] ?: "Unknown"
-        val conn = connStates[data[10].toInt()] ?: "Unknown (${data[10].toInt()})"
+        val conn = connStates[data[10].toInt() and 0xFF] ?: "Unknown (${data[10].toInt()})"
 
         val primaryLeft = ((status shr 5) and 0x01) == 1
         val thisInCase = ((status shr 6) and 0x01) == 1
@@ -422,7 +458,7 @@ class BLEManager(private val context: Context) {
 
         return AirPodsStatus(
             address = address,
-            lastSeen = System.currentTimeMillis(),
+            lastSeen = SystemClock.elapsedRealtime(),
             paired = paired,
             model = model,
             leftBattery = decodeBattery(leftBatteryNibble),

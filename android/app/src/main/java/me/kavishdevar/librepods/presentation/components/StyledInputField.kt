@@ -68,6 +68,7 @@ fun StyledInputField(
             modifier = Modifier
                 .fillMaxWidth()
                 .padding(horizontal = 16.dp)
+                .focusRequester(focusRequester)
         )
     }
     else {

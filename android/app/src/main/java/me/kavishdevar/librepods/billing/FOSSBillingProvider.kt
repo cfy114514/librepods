@@ -32,6 +32,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.launch
 import me.kavishdevar.librepods.R
+import android.util.Log
+import me.kavishdevar.librepods.utils.KeyedWorkSession
 
 class FOSSBillingProvider(context: Context): BillingProvider {
     private val _isPremium = MutableStateFlow(false)
@@ -40,7 +42,20 @@ class FOSSBillingProvider(context: Context): BillingProvider {
     private val _price = MutableStateFlow(context.getString(R.string.name_your_own_price))
     override val price: StateFlow<String> = _price
 
-    private val sharedPreferences = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
+    private val appContext = context.applicationContext
+    private val sharedPreferences by lazy { appContext.getSharedPreferences("settings", Context.MODE_PRIVATE) }
+
+    private val entitlementState = FossEntitlementState { if (it.ready) _isPremium.value = it.premium }
+    internal val entitlement = entitlementState.state
+    private enum class WorkKind { READ, UNLOCK }
+    private data class Work(val kind: WorkKind, val ticket: Long = 0)
+    private val worker = KeyedWorkSession<WorkKind, Work>(WorkKind.entries.toSet(), Dispatchers.IO,
+        consume = { work ->
+            when (work.kind) {
+                WorkKind.READ -> readEntitlement()
+                WorkKind.UNLOCK -> persistUnlock(work.ticket)
+            }
+        })
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private var purchaseJob: Job? = null
@@ -58,20 +73,42 @@ class FOSSBillingProvider(context: Context): BillingProvider {
 
         purchaseJob = scope.launch {
             delay(5_000)
-            _isPremium.value = true
-            sharedPreferences.edit { putBoolean("foss_upgraded", true) }
+            unlock()
         }
     }
 
     override fun queryPurchases() {
-        val stored = sharedPreferences.getBoolean("foss_upgraded", false)
-        if (stored != _isPremium.value) {
-            _isPremium.value = stored
-        }
+        val pending = entitlementState.pendingUnlockTicket()
+        if (pending == null) worker.offer(WorkKind.READ, Work(WorkKind.READ))
+        else worker.offer(WorkKind.UNLOCK, Work(WorkKind.UNLOCK, pending))
     }
 
     override fun restorePurchases() {
-        _isPremium.value = true
-        sharedPreferences.edit { putBoolean("foss_upgraded", true) }
+        unlock()
+    }
+
+    private fun unlock() {
+        val ticket = entitlementState.requestUnlock()
+        worker.offer(WorkKind.UNLOCK, Work(WorkKind.UNLOCK, ticket))
+    }
+
+    private fun readEntitlement() {
+        val ticket = entitlementState.beginRead() ?: return
+        try { entitlementState.acceptRead(ticket, sharedPreferences.getBoolean("foss_upgraded", false)) }
+        catch (error: Exception) {
+            entitlementState.failRead(ticket)
+            Log.w("FOSSBillingProvider", "Could not load local purchase status", error)
+        }
+    }
+
+    private fun persistUnlock(ticket: Long) {
+        if (entitlementState.pendingUnlockTicket() != ticket) return
+        try {
+            sharedPreferences.edit { putBoolean("foss_upgraded", true) }
+            entitlementState.completeUnlock(ticket)
+        } catch (error: Exception) {
+            entitlementState.failUnlock(ticket)
+            Log.w("FOSSBillingProvider", "Could not save local purchase status", error)
+        }
     }
 }

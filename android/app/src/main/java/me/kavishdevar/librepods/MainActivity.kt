@@ -30,9 +30,9 @@ import android.content.Context
 import android.content.Context.MODE_PRIVATE
 import android.content.Intent
 import android.content.ServiceConnection
-import android.content.SharedPreferences
 import android.os.Bundle
 import android.os.IBinder
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
@@ -40,6 +40,7 @@ import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -56,19 +57,31 @@ import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
 import me.kavishdevar.librepods.data.AirPodsNotifications
 import me.kavishdevar.librepods.data.ControlCommandRepository
 import me.kavishdevar.librepods.presentation.navigation.NavigationRoot
-import me.kavishdevar.librepods.presentation.theme.LibrePodsTheme
+import me.kavishdevar.librepods.presentation.components.StartupSettingsGate
+import me.kavishdevar.librepods.presentation.viewmodel.StartupSettingsSnapshot
+import me.kavishdevar.librepods.presentation.viewmodel.StartupSettingsViewModel
 import me.kavishdevar.librepods.presentation.viewmodel.AirPodsViewModel
 import me.kavishdevar.librepods.services.AirPodsService
 import me.kavishdevar.librepods.utils.XposedState
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 import kotlin.io.encoding.ExperimentalEncodingApi
 
 //@AndroidEntryPoint
 @ExperimentalMaterial3Api
 class MainActivity : ComponentActivity() {
     companion object {
-        init {
-            if (XposedState.isAvailable && XposedState.bluetoothScopeEnabled) {
-                System.loadLibrary("l2c_fcr_hook")
+        private val nativeLoadLock = Any()
+        private var nativeLoaded = false
+        private fun loadNativeLibrary() {
+            synchronized(nativeLoadLock) {
+                if (nativeLoaded || !XposedState.isAvailable || !XposedState.bluetoothScopeEnabled) return
+                try {
+                    System.loadLibrary("l2c_fcr_hook")
+                    nativeLoaded = true
+                } catch (error: LinkageError) {
+                    Log.w("MainActivity", "Could not load optional native library", error)
+                }
             }
         }
     }
@@ -79,30 +92,20 @@ class MainActivity : ComponentActivity() {
         enableEdgeToEdge()
 
         setContent {
-            val sharedPreferences = LocalContext.current.getSharedPreferences("settings", MODE_PRIVATE)
-            val m3eEnabled = remember { mutableStateOf(sharedPreferences.getBoolean("m3e_enabled", true)) }
-
-            val sharedPreferenceChangeListener = SharedPreferences.OnSharedPreferenceChangeListener { sharedPreferences, key ->
-                when (key) {
-                    "m3e_enabled" -> m3eEnabled.value = sharedPreferences.getBoolean(key, true)
+            LaunchedEffect(XposedState.isAvailable, XposedState.bluetoothScopeEnabled) {
+                if (XposedState.isAvailable && XposedState.bluetoothScopeEnabled) {
+                    withContext(Dispatchers.IO) { loadNativeLibrary() }
                 }
             }
-
-            DisposableEffect(Unit) {
-                sharedPreferences.registerOnSharedPreferenceChangeListener(sharedPreferenceChangeListener)
-                onDispose {
-                    sharedPreferences.unregisterOnSharedPreferenceChangeListener(sharedPreferenceChangeListener)
-                }
-            }
-            LibrePodsTheme(
-                m3eEnabled = m3eEnabled.value
-            ) {
+            val startup: StartupSettingsViewModel = viewModel()
+            val settings by startup.state.collectAsState()
+            StartupSettingsGate(settings, startup::refresh) { snapshot ->
 //                For demo screenshots
 //                val windowInsetsController = WindowCompat.getInsetsController(window, window.decorView)
 //                windowInsetsController.systemBarsBehavior = WindowInsetsControllerCompat.BEHAVIOR_SHOW_TRANSIENT_BARS_BY_SWIPE
 //                windowInsetsController.hide(WindowInsetsCompat.Type.statusBars())
 
-                Main()
+                Main(snapshot)
             }
         }
     }
@@ -117,23 +120,18 @@ class MainActivity : ComponentActivity() {
 @SuppressLint("MissingPermission", "InlinedApi", "UnspecifiedRegisterReceiverFlag")
 @OptIn(ExperimentalPermissionsApi::class, ExperimentalMaterial3Api::class)
 @Composable
-fun Main() {
+fun Main(startup: StartupSettingsSnapshot) {
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val sharedPreferences = remember(context) {
-        context.getSharedPreferences("settings", MODE_PRIVATE)
-    }
+    val sharedPreferences = startup.preferences
 
     val airPodsViewModel: AirPodsViewModel = viewModel()
 
     LaunchedEffect(Unit) {
         if (BuildConfig.PLAY_BUILD) {
             val now = System.currentTimeMillis()
-            val firstConn =
-                sharedPreferences.getLong("first_connection_successful_time", 0L)
-
-            val alreadyPrompted =
-                sharedPreferences.getBoolean("review_prompted", false)
+            val firstConn = startup.firstConnectionTime
+            val alreadyPrompted = startup.reviewPrompted
 
             val oneDay = 24 * 60 * 60 * 1000L
 
@@ -152,50 +150,82 @@ fun Main() {
     }
 
     var onboardingComplete by remember(sharedPreferences) {
-        mutableStateOf(sharedPreferences.getBoolean("onboarding_complete", false))
+        mutableStateOf(startup.onboardingComplete)
     }
 
-    val releaseNotesShownPrefKey = "release_notes_shown_${BuildConfig.VERSION_NAME.removeSuffix("-debug").removeSuffix("-play")}"
-    val releaseNotesShown = sharedPreferences.getBoolean(releaseNotesShownPrefKey, false)
+    val releaseNotesShownPrefKey = startup.releaseNotesPrefKey
+    val releaseNotesShown = startup.releaseNotesShown
 
     DisposableEffect(context, lifecycleOwner, airPodsViewModel, onboardingComplete) {
-        var bound = false
-        val serviceConnection = object: ServiceConnection {
-            override fun onServiceConnected(name: ComponentName?, service: IBinder?) {
-                val binder = service as AirPodsService.LocalBinder
-                val service = binder.getService()
-                airPodsViewModel.init(
-                    service = service,
-                    controlRepo = ControlCommandRepository(service.aacpManager),
-                    sharedPreferences = context.getSharedPreferences("settings", MODE_PRIVATE),
-                    appContext = context.applicationContext
-                )
+        var disposed = false
+        var currentConnection: ServiceConnection? = null
+        var connectedService: AirPodsService? = null
 
-                if (!sharedPreferences.contains("first_connection_successful_time")) {
-                    sharedPreferences.edit {
-                        putLong("first_connection_successful_time", System.currentTimeMillis())
-                    }
-                }
-            }
-
-            override fun onServiceDisconnected(name: ComponentName?) {
-                // Android reconnects an existing binding if the service restarts.
+        fun unbindService() {
+            val connection = currentConnection
+            // Revoke callbacks before a platform unbind can dispatch more work.
+            currentConnection = null
+            connectedService = null
+            if (connection != null) {
+                runCatching { context.unbindService(connection) }
+                    .onFailure { Log.w("MainActivity", "Unable to release service binding", it) }
             }
         }
 
-        fun unbindService() {
-            if (bound) {
-                context.unbindService(serviceConnection)
-                bound = false
+        fun bindService() {
+            if (disposed || !onboardingComplete || currentConnection != null) return
+            val connection = object : ServiceConnection {
+                override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+                    if (disposed || currentConnection !== this) return
+                    val service = (binder as? AirPodsService.LocalBinder)?.getService()
+                    if (service == null) { unbindService(); return }
+                    connectedService = service
+                    airPodsViewModel.init(
+                        service = service,
+                        controlRepo = ControlCommandRepository(service.aacpManager),
+                        sharedPreferences = sharedPreferences,
+                        appContext = context.applicationContext
+                    )
+                    service.requestConnectionNotificationRefresh()
+                    if (!sharedPreferences.contains("first_connection_successful_time")) {
+                        sharedPreferences.edit {
+                            putLong("first_connection_successful_time", System.currentTimeMillis())
+                        }
+                    }
+                }
+
+                override fun onServiceDisconnected(name: ComponentName?) {
+                    // Android can reconnect this registration while the page remains started.
+                    if (currentConnection === this) connectedService = null
+                }
+
+                override fun onBindingDied(name: ComponentName?) {
+                    if (currentConnection === this) unbindService()
+                }
+
+                override fun onNullBinding(name: ComponentName?) {
+                    if (currentConnection === this) unbindService()
+                }
+            }
+            val intent = Intent(context, AirPodsService::class.java)
+            try {
+                context.startForegroundService(intent)
+                currentConnection = connection
+                // false can still leave an SDK registration that needs unbind.
+                if (!context.bindService(intent, connection, Context.BIND_AUTO_CREATE)) unbindService()
+            } catch (error: Exception) {
+                unbindService()
+                Log.w("MainActivity", "Unable to start or bind service", error)
             }
         }
 
         val observer = object : DefaultLifecycleObserver {
+            override fun onResume(owner: LifecycleOwner) {
+                connectedService?.requestConnectionNotificationRefresh()
+            }
+
             override fun onStart(owner: LifecycleOwner) {
-                if (!onboardingComplete || bound) return
-                val intent = Intent(context, AirPodsService::class.java)
-                context.startForegroundService(intent)
-                bound = context.bindService(intent, serviceConnection, Context.BIND_AUTO_CREATE)
+                bindService()
             }
 
             override fun onStop(owner: LifecycleOwner) {
@@ -205,6 +235,7 @@ fun Main() {
         lifecycleOwner.lifecycle.addObserver(observer)
 
         onDispose {
+            disposed = true
             lifecycleOwner.lifecycle.removeObserver(observer)
             unbindService()
         }

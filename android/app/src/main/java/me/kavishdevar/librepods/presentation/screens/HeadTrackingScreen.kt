@@ -102,11 +102,9 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 @Composable
 fun HeadTrackingScreen(viewModel: AirPodsViewModel, navigateToPurchase: () -> Unit) {
     val state by viewModel.uiState.collectAsState()
-    DisposableEffect(Unit) {
-        viewModel.startHeadTracking()
-        onDispose {
-            viewModel.stopHeadTracking()
-        }
+    DisposableEffect(viewModel) {
+        val preview = viewModel.beginHeadTrackingPreview()
+        onDispose { preview.close() }
     }
     val isDarkTheme = isSystemInDarkTheme()
     if (isDarkTheme) Color(0xFF1C1C1E) else Color(0xFFFFFFFF)
@@ -143,7 +141,7 @@ fun HeadTrackingScreen(viewModel: AirPodsViewModel, navigateToPurchase: () -> Un
                 .padding(horizontal = 16.dp)
         ) {
 
-            if (!state.isPremium) {
+            if (state.billingReady && !state.isPremium) {
                 StyledButton(
                     onClick = navigateToPurchase,
                     backdrop = rememberLayerBackdrop(),
@@ -182,7 +180,7 @@ fun HeadTrackingScreen(viewModel: AirPodsViewModel, navigateToPurchase: () -> Un
                 ),
                 modifier = Modifier.padding(start = 16.dp, bottom = 8.dp, top = 8.dp)
             )
-            Plot()
+            Plot(state.headTrackingActive, state.headTrackingPeer)
 
             Spacer(modifier = Modifier.height(16.dp))
 
@@ -197,12 +195,18 @@ fun HeadTrackingScreen(viewModel: AirPodsViewModel, navigateToPurchase: () -> Un
             }
         }
         val gestureTextValue = stringResource(R.string.shake_your_head_or_nod)
+        val gestureYes = stringResource(R.string.head_gesture_yes)
+        val gestureNo = stringResource(R.string.head_gesture_no)
+        val gestureUnavailable = stringResource(R.string.head_gesture_unavailable)
         StyledButton(
             onClick = {
                 gestureText = gestureTextValue
                 coroutineScope.launch {
-                    val accepted = ServiceManager.getService()?.testHeadGestures() ?: false
-                    gestureText = if (accepted) "\"Yes\" gesture detected." else "\"No\" gesture detected."
+                    gestureText = when (ServiceManager.getService()?.testHeadGestures()) {
+                        true -> gestureYes
+                        false -> gestureNo
+                        null -> gestureUnavailable
+                    }
                 }
             },
             backdrop = backdrop,
@@ -274,9 +278,9 @@ fun HeadTrackingScreen(viewModel: AirPodsViewModel, navigateToPurchase: () -> Un
 }
 
 @Composable
-private fun Plot() {
+private fun Plot(active: Boolean, peer: String?) {
     val maxPoints = 100
-    val points = remember { HeadTrackingPlotHistory(maxPoints) }
+    val points = remember(peer) { HeadTrackingPlotHistory(maxPoints) }
     val drawVersion = remember { mutableIntStateOf(0) }
     val lifecycleOwner = LocalLifecycleOwner.current
     val darkTheme = isSystemInDarkTheme()
@@ -286,7 +290,8 @@ private fun Plot() {
         }
     }
 
-    LaunchedEffect(lifecycleOwner, points) {
+    LaunchedEffect(lifecycleOwner, points, active) {
+        if (!active) return@LaunchedEffect
         var previousAcceleration: Acceleration? = null
         lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
             HeadTracking.acceleration.collect { acceleration ->

@@ -105,7 +105,9 @@ fun AppSettingsScreen(
     navigateToPurchase: () -> Unit,
     navigateToTroubleshooting: () -> Unit,
     navigateToOpenSourceLicenses: () -> Unit,
-    navigateToReleaseNotesScreen: () -> Unit
+    navigateToReleaseNotesScreen: () -> Unit,
+    navigateToBatteryHistory: () -> Unit = {},
+    navigateToLiveTranslation: () -> Unit = {}
 ) {
     val context = LocalContext.current
     val scrollState = rememberScrollState()
@@ -123,6 +125,20 @@ fun AppSettingsScreen(
     val topPadding = if (m3eEnabled) 16.dp else WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 84.dp
     val bottomPadding = if (m3eEnabled) 0.dp else WindowInsets.navigationBars.asPaddingValues().calculateBottomPadding() + 12.dp
 
+    if (!state.localSettingsReady) {
+        Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainer)
+            .padding(horizontal = 24.dp, vertical = topPadding),
+            horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.Center) {
+            Text(stringResource(if (state.localSettingsError) R.string.local_settings_error else R.string.local_settings_loading),
+                color = if (state.localSettingsError) MaterialTheme.colorScheme.error else MaterialTheme.colorScheme.onSurface,
+                textAlign = TextAlign.Center)
+            if (state.localSettingsError) TextButton(onClick = viewModel::refreshLocalSettings) {
+                Text(stringResource(R.string.startup_settings_retry))
+            }
+        }
+        return
+    }
+
     Column(
         modifier = Modifier
             .fillMaxSize()
@@ -135,7 +151,14 @@ fun AppSettingsScreen(
 
         val isDarkTheme = isSystemInDarkTheme()
 
-        if (!state.isPremium && state.connectionSuccessful) {
+        if (state.localSettingsError) {
+            Text(stringResource(R.string.local_settings_error), color = MaterialTheme.colorScheme.error)
+            TextButton(onClick = viewModel::refreshLocalSettings) { Text(stringResource(R.string.startup_settings_retry)) }
+        }
+
+        me.kavishdevar.librepods.presentation.components.BillingStatusNotice(
+            state.billingReady, state.billingError, viewModel::refreshBilling)
+        if (state.billingReady && !state.isPremium && state.connectionSuccessful) {
             StyledButton(
                 onClick = navigateToPurchase,
                 backdrop = rememberLayerBackdrop(),
@@ -193,6 +216,10 @@ fun AppSettingsScreen(
             enabled = state.isPremium
         )
 
+        Spacer(modifier = Modifier.height(16.dp))
+        StyledListItem(name = stringResource(R.string.battery_history), onClick = navigateToBatteryHistory)
+        StyledListItem(name = stringResource(R.string.live_translation), onClick = navigateToLiveTranslation)
+
         if (state.connectionSuccessful) {
             StyledToggle(
                 title = stringResource(R.string.widget),
@@ -242,9 +269,6 @@ fun AppSettingsScreen(
             Spacer(modifier = Modifier.height(16.dp))
 
             val conversationalAwarenessVolume = state.conversationalAwarenessVolume
-            LaunchedEffect(conversationalAwarenessVolume) {
-                viewModel.setConversationalAwarenessVolume(conversationalAwarenessVolume)
-            }
 
             StyledSlider(
                 label = stringResource(R.string.conversational_awareness_volume),
@@ -368,6 +392,18 @@ fun AppSettingsScreen(
 
         if (XposedState.isAvailable && XposedState.bluetoothScopeEnabled) {
             val restartBluetoothText = stringResource(R.string.found_offset_restart_bluetooth)
+            if (!state.xposedPreferencesReady) {
+                Text(
+                    text = stringResource(if (state.xposedPreferencesError) R.string.xposed_preferences_unavailable else R.string.xposed_preferences_loading),
+                    style = MaterialTheme.typography.bodyMedium,
+                    modifier = Modifier.padding(vertical = 8.dp)
+                )
+                if (state.xposedPreferencesError) {
+                    TextButton(onClick = viewModel::refreshXposedPreferences) {
+                        Text(stringResource(R.string.retry_xposed_preferences))
+                    }
+                }
+            }
             StyledToggle(
                 label = stringResource(R.string.act_as_an_apple_device) + " (${
                     stringResource(
@@ -376,11 +412,23 @@ fun AppSettingsScreen(
                 })",
                 description = stringResource(R.string.apple_identity_model_description),
                 checked = state.vendorIdHook,
+                enabled = state.xposedPreferencesReady,
                 onCheckedChange = { enabled ->
-                    Toast.makeText(context, restartBluetoothText, Toast.LENGTH_SHORT).show()
-                    viewModel.setVendorIdHook(enabled)
+                    if (viewModel.setVendorIdHook(enabled)) Toast.makeText(context, restartBluetoothText, Toast.LENGTH_SHORT).show()
                 }
             )
+            if (Build.VERSION.SDK_INT >= 37) {
+                Spacer(modifier = Modifier.height(16.dp))
+                StyledToggle(
+                    label = stringResource(R.string.force_legacy_l2cap_workaround),
+                    description = stringResource(R.string.force_legacy_l2cap_workaround_description),
+                    checked = state.forceLegacyL2capWorkaround,
+                    enabled = state.xposedPreferencesReady,
+                    onCheckedChange = { enabled ->
+                        if (viewModel.setForceLegacyL2capWorkaround(enabled)) Toast.makeText(context, restartBluetoothText, Toast.LENGTH_SHORT).show()
+                    }
+                )
+            }
         }
 
         if (!BuildConfig.PLAY_BUILD) {

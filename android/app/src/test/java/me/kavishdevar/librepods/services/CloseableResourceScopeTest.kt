@@ -101,4 +101,68 @@ class CloseableResourceScopeTest {
         scope.close()
         assertEquals(1, closes)
     }
+
+    @Test fun deferredCloseRevokesParentAndChildBeforePhysicalCleanup() {
+        val pending = mutableListOf<List<Closeable>>()
+        val owner = CloseableResourceScope(closeResources = { pending.add(it) })
+        val child = owner.track(owner.createChildScope())
+        var closes = 0
+        child.track(Closeable { closes++ })
+        owner.close()
+        assertTrue(owner.isClosed)
+        assertTrue(child.isClosed)
+        assertEquals(0, closes)
+        try { child.whileOpen { fail("Retired child published") } }
+        catch (_: CancellationException) { }
+        pending.removeAt(0).forEach { it.close() }
+        assertEquals(0, closes)
+        pending.removeAt(0).forEach { it.close() }
+        assertEquals(1, closes)
+        owner.close()
+        child.close()
+        assertTrue(pending.isEmpty())
+    }
+
+    @Test fun rejectedLateChildResourceUsesInheritedClosingPolicy() {
+        val pending = mutableListOf<List<Closeable>>()
+        val owner = CloseableResourceScope(closeResources = { pending.add(it) })
+        val child = owner.track(owner.createChildScope())
+        owner.close()
+        var closes = 0
+        try { child.track(Closeable { closes++ }); fail("Late resource accepted") }
+        catch (_: CancellationException) { }
+        assertEquals(0, closes)
+        while (pending.isNotEmpty()) pending.removeAt(0).forEach { it.close() }
+        assertEquals(1, closes)
+    }
+
+    @Test fun failedClosingHandoffStillClosesEveryResource() {
+        val owner = CloseableResourceScope(closeResources = { error("Dispatch failed") })
+        var closes = 0
+        owner.track(Closeable { error("First resource failed") })
+        owner.track(Closeable { closes++ })
+        owner.close()
+        assertEquals(1, closes)
+        assertTrue(owner.isClosed)
+    }
+
+    @Test fun releasingOldDeferredChildDoesNotTouchReplacement() {
+        val pending = mutableListOf<List<Closeable>>()
+        val owner = CloseableResourceScope(closeResources = { pending.add(it) })
+        val old = owner.track(owner.createChildScope())
+        val replacement = owner.track(owner.createChildScope())
+        var oldCloses = 0
+        var newCloses = 0
+        old.track(Closeable { oldCloses++ })
+        replacement.track(Closeable { newCloses++ })
+        old.close()
+        owner.release(old)
+        pending.removeAt(0).forEach { it.close() }
+        assertEquals(1, oldCloses)
+        assertEquals(0, newCloses)
+        assertFalse(replacement.isClosed)
+        owner.close()
+        while (pending.isNotEmpty()) pending.removeAt(0).forEach { it.close() }
+        assertEquals(1, newCloses)
+    }
 }
