@@ -6,10 +6,12 @@ on:
       - '**'
     paths:
       - 'android/**'
+      - 'root-module-manual/**'
       - '.github/workflows/ci-android.yml'
   pull_request:
     paths:
       - 'android/**'
+      - 'root-module-manual/**'
       - '.github/workflows/ci-android.yml'
   workflow_dispatch:
     inputs:

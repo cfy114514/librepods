@@ -2471,10 +2471,10 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                         intent.putExtra("name", name)
                         intent.putExtra("device", bluetoothDevice)
                         context?.sendBroadcast(intent)
-                    } else {
+                    } /* else {
                         bluetoothDevice.fetchUuidsWithSdp()
-                    }
-                } else if ("android.bluetooth.device.action.UUID" == action) {
+                    } */
+                } /* else if ("android.bluetooth.device.action.UUID" == action) {
                     val savedMac = context?.getSharedPreferences("settings", MODE_PRIVATE)
                         ?.getString("mac_address", "") ?: ""
                     val matchedByMac = savedMac.isNotEmpty() && bluetoothDevice.address == savedMac
@@ -2485,7 +2485,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                         intent.putExtra("device", bluetoothDevice)
                         context?.sendBroadcast(intent)
                     }
-                }
+                } */
             }
         }
     }
