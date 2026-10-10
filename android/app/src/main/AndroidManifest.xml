@@ -5,11 +5,15 @@
     <uses-feature
         android:name="android.hardware.telephony"
         android:required="false" />
+    <uses-feature android:name="android.hardware.microphone" android:required="false" />
 
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"
         tools:ignore="ForegroundServicesPolicy" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_CONNECTED_DEVICE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE" />
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PLAYBACK" />
+    <uses-permission android:name="android.permission.RECORD_AUDIO" />
     <uses-permission android:name="android.permission.BLUETOOTH_ADMIN" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -41,6 +45,11 @@
 <!--    <uses-permission android:name="android.permission.ACCESS_COARSE_LOCATION"-->
 <!--        android:maxSdkVersion="30" />-->
     <uses-permission android:name="com.android.vending.BILLING" />
+
+    <queries>
+        <intent><action android:name="android.speech.RecognitionService" /></intent>
+        <intent><action android:name="android.intent.action.TTS_SERVICE" /></intent>
+    </queries>
 
     <application
         android:name=".LibrePodsApplication"
@@ -113,6 +122,14 @@
             android:foregroundServiceType="connectedDevice"
             android:permission="android.permission.BLUETOOTH_CONNECT" />
         <service
+            android:name=".services.LiveListenService"
+            android:exported="false"
+            android:foregroundServiceType="microphone|shortService" />
+        <service
+            android:name=".services.LiveTranslationService"
+            android:exported="false"
+            android:foregroundServiceType="microphone|mediaPlayback|shortService" />
+        <service
             android:name=".services.AirPodsQSService"
             android:exported="true"
             android:icon="@drawable/airpods"
@@ -122,17 +139,15 @@
                 <action android:name="android.service.quicksettings.action.QS_TILE" />
             </intent-filter>
         </service>
-<!--        <service-->
-<!--            android:name=".services.AppListenerService"-->
-<!--            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"-->
-<!--            android:exported="true">-->
-<!--            <intent-filter>-->
-<!--                <action android:name="android.accessibilityservice.AccessibilityService" />-->
-<!--            </intent-filter>-->
-<!--            <meta-data-->
-<!--                android:name="android.accessibilityservice"-->
-<!--                android:resource="@xml/app_listener_service_config" />-->
-<!--        </service>-->
+        <service
+            android:name=".services.AppListenerService"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data android:name="android.accessibilityservice" android:resource="@xml/app_listener_service_config" />
+        </service>
         <receiver
             android:name=".receivers.BootReceiver"
             android:enabled="true"
@@ -141,6 +156,7 @@
             <intent-filter>
                 <action android:name="android.intent.action.BOOT_COMPLETED" />
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
+                <action android:name="android.intent.action.TIME_SET" />
             </intent-filter>
         </receiver>
 

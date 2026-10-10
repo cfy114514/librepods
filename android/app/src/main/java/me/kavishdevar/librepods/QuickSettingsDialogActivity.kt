@@ -50,6 +50,7 @@ import androidx.compose.foundation.gestures.detectVerticalDragGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -65,9 +66,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
-import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -81,6 +82,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.res.painterResource
+import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
@@ -94,53 +96,35 @@ import me.kavishdevar.librepods.data.NoiseControlMode
 import me.kavishdevar.librepods.services.AirPodsService
 import me.kavishdevar.librepods.presentation.theme.LibrePodsTheme
 import me.kavishdevar.librepods.bluetooth.AACPManager
+import me.kavishdevar.librepods.utils.MusicVolumeSession
 import kotlin.io.encoding.ExperimentalEncodingApi
 import kotlin.math.abs
 
 class QuickSettingsDialogActivity : ComponentActivity() {
 
-    private var airPodsService: AirPodsService? = null
-    private var isBound = false
-
+    private var airPodsService by mutableStateOf<AirPodsService?>(null)
+    private var bindingAttempted = false
+    private var bindingAccepted = false
+    private var closed = false
     private var isNoiseControlExpandedState by mutableStateOf(false)
 
     private val connection = object : ServiceConnection {
         override fun onServiceConnected(className: ComponentName, service: IBinder) {
-            val binder = service as AirPodsService.LocalBinder
+            if (closed || !bindingAccepted) return
+            val binder = service as? AirPodsService.LocalBinder
+            if (binder == null) { finish(); return }
             airPodsService = binder.getService()
-            isBound = true
             Log.d("QSActivity", "Service bound")
-            setContent {
-                LibrePodsTheme {
-                    DraggableDismissBox(
-                        onDismiss = { finish() },
-                        onlyCollapseWhenClicked = {
-                            if (isNoiseControlExpandedState) {
-                                isNoiseControlExpandedState = false
-                                true
-                            } else {
-                                false
-                            }
-                        }
-                    ) {
-                        if (isBound && airPodsService != null) {
-                            NewControlCenterDialogContent(
-                                service = airPodsService,
-                                isNoiseControlExpanded = isNoiseControlExpandedState,
-                                onNoiseControlExpandedChange = { isNoiseControlExpandedState = it }
-                            )
-                        }
-                    }
-                }
-            }
         }
 
-        override fun onServiceDisconnected(arg0: ComponentName) {
-            isBound = false
+        override fun onServiceDisconnected(name: ComponentName) {
             airPodsService = null
-            Log.d("QSActivity", "Service unbound")
+            // A lost service still has a binding that onDestroy must release.
             finish()
         }
+
+        override fun onBindingDied(name: ComponentName) { finish() }
+        override fun onNullBinding(name: ComponentName) { finish() }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -150,8 +134,13 @@ class QuickSettingsDialogActivity : ComponentActivity() {
         window.addFlags(WindowManager.LayoutParams.FLAG_BLUR_BEHIND)
         window.setGravity(Gravity.BOTTOM)
 
-        Intent(this, AirPodsService::class.java).also { intent ->
-            bindService(intent, connection, BIND_AUTO_CREATE)
+        bindingAttempted = true
+        try {
+            bindingAccepted = bindService(Intent(this, AirPodsService::class.java), connection, BIND_AUTO_CREATE)
+            if (!bindingAccepted) finish()
+        } catch (error: Exception) {
+            Log.w("QSActivity", "Unable to bind service", error)
+            finish()
         }
 
         setContent {
@@ -167,7 +156,7 @@ class QuickSettingsDialogActivity : ComponentActivity() {
                         }
                     }
                 ) {
-                    if (isBound && airPodsService != null) {
+                    if (airPodsService != null) {
                         NewControlCenterDialogContent(
                             service = airPodsService,
                             isNoiseControlExpanded = isNoiseControlExpandedState,
@@ -180,12 +169,18 @@ class QuickSettingsDialogActivity : ComponentActivity() {
     }
 
     override fun onDestroy() {
-        super.onDestroy()
-        if (isBound) {
-            unbindService(connection)
-            isBound = false
+        closed = true
+        bindingAccepted = false
+        airPodsService = null
+        if (bindingAttempted) {
+            bindingAttempted = false
+            // Context requires cleanup even after bindService returns false.
+            runCatching { unbindService(connection) }
+                .onFailure { Log.w("QSActivity", "Unable to release service binding", it) }
         }
+        super.onDestroy()
     }
+
 }
 
 @Composable
@@ -310,91 +305,67 @@ fun NewControlCenterDialogContent(
     var currentAncMode by remember { mutableStateOf(NoiseControlMode.TRANSPARENCY) }
     var isConvAwarenessEnabled by remember { mutableStateOf(false) }
 
-    val isOffModeEnabled = remember { sharedPreferences.getBoolean("off_listening_mode", true) }
-    val availableModes = remember(isOffModeEnabled) {
-        mutableListOf(
-            NoiseControlMode.TRANSPARENCY,
-            NoiseControlMode.ADAPTIVE,
-            NoiseControlMode.NOISE_CANCELLATION
-        ).apply {
-            if (isOffModeEnabled) {
-                add(0, NoiseControlMode.OFF)
-            }
-        }
-    }
+    var availableModes by remember(service) { mutableStateOf(
+        service?.supportedListeningModes().orEmpty().map { NoiseControlMode.entries[it - 1] }) }
 
-    val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
-    val maxVolume = remember { audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC) }
-    var currentVolumeInt by remember { mutableIntStateOf(audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)) }
-    val animatedVolumeFraction by animateFloatAsState(
-        targetValue = currentVolumeInt.toFloat() / maxVolume.toFloat(),
-        animationSpec = spring(
-            dampingRatio = Spring.DampingRatioLowBouncy,
-            stiffness = Spring.StiffnessMediumLow
-        ),
-        label = "VolumeAnimation"
-    )
-    var liveDragFraction by remember { mutableFloatStateOf(animatedVolumeFraction) }
-    var isDraggingVolume by remember { mutableStateOf(false) }
-    LaunchedEffect(animatedVolumeFraction, isDraggingVolume) {
-        if (!isDraggingVolume) {
-            liveDragFraction = animatedVolumeFraction
-        }
+    val applicationContext = context.applicationContext
+    val volumeSession = remember(applicationContext) {
+        val audioManager by lazy { applicationContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager }
+        MusicVolumeSession(
+            read = { audioManager.getStreamMaxVolume(AudioManager.STREAM_MUSIC) to audioManager.getStreamVolume(AudioManager.STREAM_MUSIC) },
+            write = { audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, it, 0) },
+            onError = { Log.w("QSActivity", "Music volume service failed", it) }
+        )
     }
+    val volume by volumeSession.state.collectAsState()
 
-    DisposableEffect(service, availableModes) {
+    DisposableEffect(service) {
         val ancReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 if (intent.action == AirPodsNotifications.ANC_DATA && service != null) {
+                    availableModes = service.supportedListeningModes().map { NoiseControlMode.entries[it - 1] }
                     val newModeOrdinal = intent.getIntExtra("data", NoiseControlMode.TRANSPARENCY.ordinal + 1) - 1
                     val newMode = NoiseControlMode.entries.getOrElse(newModeOrdinal) { NoiseControlMode.TRANSPARENCY }
-                    if (availableModes.contains(newMode)) {
-                         currentAncMode = newMode
-                    } else if (newMode == NoiseControlMode.OFF && !isOffModeEnabled) {
-                        currentAncMode = NoiseControlMode.TRANSPARENCY
-                    }
+                    currentAncMode = newMode
                     Log.d("QSActivity", "ANC Receiver updated mode to: $currentAncMode (available: ${availableModes.joinToString()})")
                 }
             }
         }
         val filter = IntentFilter(AirPodsNotifications.ANC_DATA)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(ancReceiver, filter, Context.RECEIVER_EXPORTED)
-        } else {
-            context.registerReceiver(ancReceiver, filter)
+        context.registerReceiver(ancReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+        val preferences = android.content.SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key in setOf("off_listening_mode", "off_listening_mode_address", "airpods_model_number", "airpods_model_address", "mac_address")) {
+                availableModes = service?.supportedListeningModes().orEmpty().map { NoiseControlMode.entries[it - 1] }
+            }
         }
+        sharedPreferences.registerOnSharedPreferenceChangeListener(preferences)
 
         service?.let {
             val initialModeOrdinal = it.getANC().minus(1)
-            var initialMode = NoiseControlMode.entries.getOrElse(initialModeOrdinal) { NoiseControlMode.TRANSPARENCY }
-            if (!availableModes.contains(initialMode)) {
-                initialMode = NoiseControlMode.TRANSPARENCY
-            }
+            val initialMode = NoiseControlMode.entries.getOrElse(initialModeOrdinal) { NoiseControlMode.TRANSPARENCY }
             currentAncMode = initialMode
             isConvAwarenessEnabled = sharedPreferences.getBoolean("conversational_awareness", true)
             Log.d("QSActivity", "Initial ANC: $currentAncMode, ConvAware: $isConvAwarenessEnabled")
         }
 
         onDispose {
+            sharedPreferences.unregisterOnSharedPreferenceChangeListener(preferences)
             context.unregisterReceiver(ancReceiver)
         }
     }
 
-    DisposableEffect(Unit) {
+    DisposableEffect(volumeSession, context) {
         val volumeReceiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
                 if (intent.action == "android.media.VOLUME_CHANGED_ACTION") {
-                    val newVolume = audioManager.getStreamVolume(AudioManager.STREAM_MUSIC)
-                    if (newVolume != currentVolumeInt) {
-                        currentVolumeInt = newVolume
-                        Log.d("QSActivity", "Volume Receiver updated volume to: $currentVolumeInt")
-                    }
+                    volumeSession.refresh()
                 }
             }
         }
         val filter = IntentFilter("android.media.VOLUME_CHANGED_ACTION")
         context.registerReceiver(volumeReceiver, filter)
         onDispose {
+            volumeSession.close()
             context.unregisterReceiver(volumeReceiver)
         }
     }
@@ -444,30 +415,37 @@ fun NewControlCenterDialogContent(
 
                 Spacer(modifier = Modifier.height(32.dp))
 
-                VerticalVolumeSlider(
-                    displayFraction = animatedVolumeFraction,
-                    maxVolume = maxVolume,
-                    onVolumeChange = { newVolume ->
-                        currentVolumeInt = newVolume
-                        try {
-                            audioManager.setStreamVolume(AudioManager.STREAM_MUSIC, newVolume, 0)
-                        } catch (e: Exception) { Log.e("QSActivity", "Failed to set volume", e) }
-                    },
-                    initialFraction = animatedVolumeFraction,
-                    onDragStateChange = { dragging -> isDraggingVolume = dragging },
-                    baseSliderHeight = 400.dp,
-                    baseSliderWidth = 145.dp,
-                    baseCornerRadius = 48.dp,
-                    maxStretchFactor = 1.15f,
-                    minCompressionFactor = 0.875f,
-                    stretchSensitivity = 0.3f,
-                    compressionSensitivity = 0.3f,
-                    cornerRadiusChangeFactor = -0.5f,
-                    directionalStretchRatio = 0.75f,
-                    modifier = Modifier
-                        .width(145.dp)
-                        .padding(vertical = 8.dp)
-                )
+                if (volume.ready) {
+                    val fraction = volume.volume.toFloat() / volume.maxVolume
+                    BoxWithConstraints(Modifier.weight(1f).width(145.dp), contentAlignment = Alignment.Center) {
+                        VerticalVolumeSlider(
+                            displayFraction = fraction,
+                            maxVolume = volume.maxVolume,
+                            onVolumeChange = { volumeSession.setVolume(it) },
+                            initialFraction = fraction,
+                            onDragStateChange = {},
+                            baseSliderHeight = (maxHeight - 16.dp).coerceIn(1.dp, 400.dp),
+                            baseSliderWidth = 145.dp,
+                            baseCornerRadius = 48.dp,
+                            maxStretchFactor = 1.15f,
+                            minCompressionFactor = 0.875f,
+                            stretchSensitivity = 0.3f,
+                            compressionSensitivity = 0.3f,
+                            cornerRadiusChangeFactor = -0.5f,
+                            directionalStretchRatio = 0.75f,
+                            modifier = Modifier.width(145.dp).padding(vertical = 8.dp)
+                        )
+                    }
+                } else {
+                    Box(Modifier.weight(1f).width(145.dp), contentAlignment = Alignment.Center) {
+                        Text(stringResource(if (volume.failed) R.string.music_volume_error else R.string.music_volume_loading), color = textColor)
+                    }
+                }
+                if (volume.failed) {
+                    if (volume.ready) Text(stringResource(R.string.music_volume_error), color = textColor)
+                    Text(stringResource(R.string.startup_settings_retry), color = textColor,
+                        modifier = Modifier.clickable { volumeSession.refresh() }.padding(12.dp))
+                }
             }
 
             Spacer(modifier = Modifier.weight(1f))
@@ -494,10 +472,7 @@ fun NewControlCenterDialogContent(
                             availableModes = availableModes,
                             selectedMode = currentAncMode,
                             onModeSelected = { newMode ->
-                                service.aacpManager.sendControlCommand(
-                                    identifier = AACPManager.Companion.ControlCommandIdentifiers.LISTENING_MODE.value,
-                                    value = newMode.ordinal + 1
-                                )
+                                service.setListeningModeAsync(newMode.ordinal + 1)
                                 currentAncMode = newMode
                             },
                             modifier = Modifier.fillMaxWidth(0.8f)
@@ -575,9 +550,9 @@ fun NewControlCenterDialogContent(
                                         .clickable(
                                             onClick = {
                                                 val newState = !isConvAwarenessEnabled
-                                                service.aacpManager.sendControlCommand(
-                                                    identifier = AACPManager.Companion.ControlCommandIdentifiers.CONVERSATION_DETECT_CONFIG.value,
-                                                    value = newState
+                                                service.enqueueInteractiveCommand(
+                                                    AACPManager.Companion.ControlCommandIdentifiers.CONVERSATION_DETECT_CONFIG.value,
+                                                    byteArrayOf(if (newState) 1 else 2)
                                                 )
                                                 isConvAwarenessEnabled = newState
                                             },

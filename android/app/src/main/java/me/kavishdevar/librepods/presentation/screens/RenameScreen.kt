@@ -20,7 +20,6 @@
 
 package me.kavishdevar.librepods.presentation.screens
 
-import android.content.Context
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -34,34 +33,38 @@ import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.text.input.rememberTextFieldState
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.platform.LocalSoftwareKeyboardController
 import androidx.compose.ui.unit.dp
-import androidx.core.content.edit
+import androidx.compose.ui.res.stringResource
 import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
 import me.kavishdevar.librepods.presentation.components.StyledInputField
 import me.kavishdevar.librepods.presentation.theme.DesignSystem
 import me.kavishdevar.librepods.presentation.theme.LocalDesignSystem
 import me.kavishdevar.librepods.presentation.viewmodel.AirPodsViewModel
+import me.kavishdevar.librepods.R
+import me.kavishdevar.librepods.data.AirPodsNameProblem
+import me.kavishdevar.librepods.data.airPodsNameProblem
+import kotlinx.coroutines.delay
 import kotlin.io.encoding.ExperimentalEncodingApi
 
 
 @OptIn(ExperimentalMaterial3Api::class, ExperimentalHazeMaterialsApi::class)
 @Composable
 fun RenameScreen(viewModel: AirPodsViewModel) {
-    val sharedPreferences = LocalContext.current.getSharedPreferences("settings", Context.MODE_PRIVATE)
-    val focusRequester = remember { FocusRequester() }
+    val state by viewModel.uiState.collectAsState()
     val keyboardController = LocalSoftwareKeyboardController.current
-
-    LaunchedEffect(Unit) {
-        focusRequester.requestFocus()
-        keyboardController?.show()
-    }
 
     val m3eEnabled = LocalDesignSystem.current == DesignSystem.Material
     val topPadding = if (m3eEnabled) 0.dp else WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 84.dp
@@ -75,18 +78,41 @@ fun RenameScreen(viewModel: AirPodsViewModel) {
     ) {
         Spacer(modifier = Modifier.height(topPadding))
 
-        val name = sharedPreferences.getString("name", "")?: ""
-        val textFieldState = rememberTextFieldState(initialText = name)
-
-        LaunchedEffect(textFieldState.text) {
-            sharedPreferences.edit {putString("name", textFieldState.text as String?)}
-            viewModel.setName(textFieldState.text.toString())
+        key(viewModel, state.selectedPeer, state.selectedPeerVersion, state.serviceBindingId) {
+            val focusRequester = remember { FocusRequester() }
+            val initialName = remember { state.deviceName }
+            val textFieldState = rememberTextFieldState(initialText = initialName)
+            val submit = remember { viewModel.createRenameEditor() }
+            var edited by remember { mutableStateOf(false) }
+            var unavailable by remember { mutableStateOf(false) }
+            val name = textFieldState.text.toString()
+            val problem = airPodsNameProblem(name)
+            LaunchedEffect(focusRequester) {
+                focusRequester.requestFocus()
+                keyboardController?.show()
+            }
+            LaunchedEffect(name) {
+                if (name != initialName) edited = true
+                if (!edited || problem != null) return@LaunchedEffect
+                delay(250)
+                unavailable = !submit(name)
+            }
+            DisposableEffect(textFieldState, submit) {
+                onDispose {
+                    val lastName = textFieldState.text.toString()
+                    if ((edited || lastName != initialName) && airPodsNameProblem(lastName) == null) submit(lastName)
+                }
+            }
+            StyledInputField(textFieldState, focusRequester)
+            val error = when (problem) {
+                AirPodsNameProblem.EMPTY -> R.string.rename_name_empty
+                AirPodsNameProblem.TOO_LONG -> R.string.rename_name_too_long
+                AirPodsNameProblem.INVALID -> R.string.rename_name_invalid
+                null -> if (unavailable) R.string.rename_connect_first else null
+            }
+            if (error != null) Text(stringResource(error), color = MaterialTheme.colorScheme.error,
+                style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(top = 8.dp))
         }
-
-        StyledInputField(
-            textFieldState,
-            focusRequester
-        )
 
         Spacer(modifier = Modifier.height(bottomPadding))
 

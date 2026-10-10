@@ -15,6 +15,7 @@ class AirPodsStatusTest {
 
     @Test fun everyObservableStateChangeIsReported() {
         val changes = listOf(
+            status.copy(ownerAddress = "AA:BB:CC:DD:EE:01"),
             status.copy(address = "11:22:33:44:55:66"),
             status.copy(paired = true),
             status.copy(model = "AirPods Pro"),
@@ -34,5 +35,14 @@ class AirPodsStatusTest {
             assertFalse("State change was ignored: $changed", status.hasSameStateAs(changed))
             assertFalse(changed.hasSameStateAs(status))
         }
+    }
+
+    @Test fun timestampsAddressRotationAndLidMotionDoNotRepeatBatteryIpc() {
+        val status = this.status.copy(ownerAddress = "AA:BB:CC:DD:EE:01", leftBattery = 80, rightBattery = 80, caseBattery = 60)
+        assertTrue(status.hasSameBatteryAs(status.copy(lastSeen = 200, address = "11:22:33:44:55:66", lidOpen = true, isLeftInEar = true)))
+        assertFalse(status.hasSameBatteryAs(status.copy(isLeftCharging = true)))
+        assertFalse(status.hasSameBatteryAs(status.copy(rightBattery = 79)))
+        assertFalse(status.hasSameBatteryAs(status.copy(caseBattery = null)))
+        assertFalse(status.hasSameBatteryAs(status.copy(ownerAddress = "AA:BB:CC:DD:EE:02")))
     }
 }

@@ -141,4 +141,13 @@
                 tools:ignore="NestedWeights" />
         </LinearLayout>
     </LinearLayout>
+    <TextView
+        android:id="@+id/widget_noise_status"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:gravity="center"
+        android:padding="12dp"
+        android:text="@string/noise_control_unavailable"
+        android:textColor="@color/white"
+        android:textSize="14sp" />
 </RelativeLayout>

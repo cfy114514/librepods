@@ -72,6 +72,10 @@ fun NavigationRoot(
         Screen.VersionInfo -> stringResource(R.string.version)
         is Screen.CallControl -> currentScreen.action
         Screen.MicrophoneSettings -> stringResource(R.string.microphone_mode)
+        Screen.LiveListen -> stringResource(R.string.live_listen)
+        Screen.LiveTranslation -> stringResource(R.string.live_translation)
+        Screen.BatteryHistory -> stringResource(R.string.battery_history)
+        Screen.CameraControl -> stringResource(R.string.camera_control)
         Screen.ReleaseNotes -> ""
     }
 

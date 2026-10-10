@@ -61,6 +61,9 @@ class KotlinModule: XposedModule() {
                     val remotePrefValue = getRemotePreferences("me.kavishdevar.librepods").getBoolean("vendor_id_hook", false)
                     log(Log.INFO, TAG, "sdp hook enabled (remote pref): $remotePrefValue")
                     NativeBridge.setSdpHook(remotePrefValue)
+                    NativeBridge.setForceLegacyL2capWorkaround(
+                        getRemotePreferences("me.kavishdevar.librepods").getBoolean("force_legacy_l2cap_workaround", false)
+                    )
                     log(Log.INFO, TAG, "Native library loaded successfully")
                 }
             } catch (e: Exception) {
@@ -152,4 +155,5 @@ class KotlinModule: XposedModule() {
 
 object NativeBridge {
     external fun setSdpHook(enabled: Boolean)
+    external fun setForceLegacyL2capWorkaround(enabled: Boolean)
 }

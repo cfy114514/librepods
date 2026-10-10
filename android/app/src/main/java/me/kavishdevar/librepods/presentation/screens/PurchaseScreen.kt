@@ -81,14 +81,16 @@ fun PurchaseScreen(
     ) {
         Spacer(modifier = Modifier.height(topPadding))
 
-        LaunchedEffect(state.isPremium) {
-            if (state.isPremium) {
+        me.kavishdevar.librepods.presentation.components.BillingStatusNotice(
+            state.billingReady, state.billingError, viewModel::refreshBilling)
+        LaunchedEffect(state.billingReady, state.isPremium) {
+            if (state.billingReady && state.isPremium) {
                 if (backStack.size > 1) {
                     backStack.removeAt(backStack.lastIndex)
                 }
             }
         }
-        if (!state.isPremium) {
+        if (state.billingReady && !state.isPremium) {
             StyledList(title = stringResource(R.string.free_features)) {
                 StyledListItem(
                     name = stringResource(R.string.ear_detection),

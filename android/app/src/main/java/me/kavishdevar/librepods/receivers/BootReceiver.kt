@@ -30,20 +30,13 @@ import me.kavishdevar.librepods.utils.SleepTimerManager
 class BootReceiver: BroadcastReceiver() {
     override fun onReceive(context: Context?, intent: Intent?) {
         val appContext = context ?: return
-        when (intent?.action) {
-            Intent.ACTION_MY_PACKAGE_REPLACED -> try { appContext.startForegroundService(
-                Intent(
-                    appContext,
-                    AirPodsService::class.java
-                )
-            ) } catch (e: Exception) { e.printStackTrace() }
-            Intent.ACTION_BOOT_COMPLETED -> try { appContext.startForegroundService(
-                Intent(
-                    appContext,
-                    AirPodsService::class.java
-                )
-            ) } catch (e: Exception) { e.printStackTrace() }
-        }
-        SleepTimerManager.restore(appContext)
+        val action = intent?.action
+        if (action != Intent.ACTION_MY_PACKAGE_REPLACED && action != Intent.ACTION_BOOT_COMPLETED &&
+            action != Intent.ACTION_TIME_CHANGED) return
+        // Retire overdue/pending reboot tasks before startup can request a timer delivery.
+        SleepTimerManager.restore(appContext, afterReboot = action == Intent.ACTION_BOOT_COMPLETED)
+        if (action != Intent.ACTION_TIME_CHANGED) try {
+            appContext.startForegroundService(Intent(appContext, AirPodsService::class.java))
+        } catch (e: Exception) { e.printStackTrace() }
     }
 }

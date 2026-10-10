@@ -22,81 +22,128 @@ package me.kavishdevar.librepods.services
 
 
 import android.accessibilityservice.AccessibilityService
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.SharedPreferences
+import android.os.Handler
+import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
+import kotlinx.coroutines.Dispatchers
+import me.kavishdevar.librepods.utils.KeyedWorkSession
+import java.util.concurrent.atomic.AtomicLong
 import kotlin.io.encoding.ExperimentalEncodingApi
 
 private const val TAG="AppListenerService"
 
-val cameraPackages = mutableSetOf(
-    "com.google.android.GoogleCamera",
-    "com.sec.android.app.camera",
-    "com.android.camera",
-    "com.oppo.camera",
-    "com.motorola.camera2",
-    "org.codeaurora.snapcam"
-)
-
-var cameraOpen = false
-private var currentCustomPackage: String? = null
+@Volatile var cameraOpen = false
+    private set
+@Volatile private var cameraListenerOwner: AppListenerService? = null
 
 class AppListenerService: AccessibilityService() {
-    private lateinit var prefs: android.content.SharedPreferences
-    private val preferenceChangeListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { sharedPreferences, key ->
-        if (key == "custom_camera_package") {
-            val newPackage = sharedPreferences.getString(key, null)
-            currentCustomPackage?.let { cameraPackages.remove(it) }
-            if (!newPackage.isNullOrBlank()) {
-                cameraPackages.add(newPackage)
-            }
-            currentCustomPackage = newPackage
-        }
+    @Volatile private var active = false
+    private val mainHandler = Handler(Looper.getMainLooper())
+    private val preferenceRevision = AtomicLong()
+    private val preferenceResources = CloseableResourceScope(closeResources = ::closeResourcesOnIo)
+    private val prefs by lazy { getSharedPreferences("settings", MODE_PRIVATE) }
+    private var preferenceRegistration: DeferredRegistration? = null
+    private val foreground = CameraForegroundState()
+    private val preferenceUpdates = KeyedWorkSession<Unit, Long>(setOf(Unit), Dispatchers.IO,
+        onError = { Log.w(TAG, "Could not read camera preferences", it) }, consume = ::loadCameraPreferences)
+    private var screenReceiverRegistered = false
+    private val screenOffReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) { clearCamera() }
+    }
+    private val preferenceChangeListener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+        if (key == "custom_camera_package" || key == null) requestCameraPreferences()
     }
 
     override fun onCreate() {
         super.onCreate()
-        prefs = getSharedPreferences("settings", MODE_PRIVATE)
-        val customPackage = prefs.getString("custom_camera_package", null)
-        if (!customPackage.isNullOrBlank()) {
-            cameraPackages.add(customPackage)
-            currentCustomPackage = customPackage
-        }
-        prefs.registerOnSharedPreferenceChangeListener(preferenceChangeListener)
+        cameraListenerOwner = this
+        active = true
+        clearCamera()
+        registerReceiver(screenOffReceiver, IntentFilter(Intent.ACTION_SCREEN_OFF), RECEIVER_NOT_EXPORTED)
+        screenReceiverRegistered = true
+        requestCameraPreferences()
     }
 
     override fun onDestroy() {
-        prefs.unregisterOnSharedPreferenceChangeListener(preferenceChangeListener)
-        if (cameraOpen) {
-            cameraOpen = false
-            ServiceManager.getService()?.cameraClosed()
+        active = false
+        preferenceResources.close()
+        preferenceUpdates.close()
+        if (screenReceiverRegistered) {
+            runCatching { unregisterReceiver(screenOffReceiver) }
+            screenReceiverRegistered = false
         }
+        clearCamera()
+        if (cameraListenerOwner === this) cameraListenerOwner = null
         super.onDestroy()
     }
 
     override fun onAccessibilityEvent(ev: AccessibilityEvent?) {
+        if (!isCurrent()) return
         try {
             if (ev?.eventType == AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED) {
                 val pkg = ev.packageName?.toString() ?: return
-                if (pkg == "com.android.systemui") return // after camera opens, systemui is opened, probably for the privacy indicators
-                Log.d(TAG, "Package: $pkg, cameraOpen: $cameraOpen")
-                if (pkg in cameraPackages) {
-                    Log.d(TAG, "Camera app opened: $pkg")
-                    if (!cameraOpen) cameraOpen = true
-                    ServiceManager.getService()?.cameraOpened()
-                } else {
-                    if (cameraOpen) {
-                        cameraOpen = false
-                        ServiceManager.getService()?.cameraClosed()
-                    } else {
-                        Log.d(TAG, "ignoring")
-                    }
-                }
-                // Log.d(TAG, "Opened: $pkg")
+                foreground.windowChanged(pkg)
+                publishCameraState()
             }
         } catch(e: Exception) {
             Log.e(TAG, "Error in onAccessibilityEvent: ${e.message}")
         }
     }
 
-    override fun onInterrupt() {}
+    private fun publishCameraState() {
+        if (cameraListenerOwner !== this) return
+        if (cameraOpen == foreground.active) return
+        cameraOpen = foreground.active
+        if (cameraOpen) ServiceManager.getService()?.cameraOpened()
+        else ServiceManager.getService()?.cameraClosed()
+    }
+
+    private fun clearCamera() {
+        if (cameraListenerOwner !== this) return
+        foreground.reset()
+        publishCameraState()
+    }
+
+    private fun isCurrent(): Boolean = active && cameraListenerOwner === this
+
+    private fun requestCameraPreferences() {
+        if (isCurrent()) preferenceUpdates.offer(Unit, preferenceRevision.incrementAndGet())
+    }
+
+    private fun loadCameraPreferences(revision: Long) {
+        if (!isCurrent()) return
+        val shared = prefs
+        if (preferenceRegistration == null) {
+            val registration = preferenceResources.track(DeferredRegistration {
+                shared.unregisterOnSharedPreferenceChangeListener(preferenceChangeListener)
+            })
+            try {
+                shared.registerOnSharedPreferenceChangeListener(preferenceChangeListener)
+                registration.didRegister()
+                preferenceRegistration = registration
+            } catch (error: Exception) {
+                // Unregister is safe even if a preferences implementation partially registered.
+                runCatching { shared.unregisterOnSharedPreferenceChangeListener(preferenceChangeListener) }
+                registration.close()
+                preferenceResources.release(registration)
+                throw error
+            }
+        }
+        if (!isCurrent()) return
+        val custom = shared.getString("custom_camera_package", null)
+        mainHandler.post {
+            if (isCurrent() && preferenceRevision.get() == revision) {
+                foreground.customPackageChanged(custom)
+                publishCameraState()
+            }
+        }
+    }
+
+    override fun onInterrupt() { clearCamera() }
 }

@@ -30,6 +30,10 @@ import me.kavishdevar.librepods.presentation.screens.HearingProtectionScreen
 import me.kavishdevar.librepods.presentation.screens.LoadingScreen
 import me.kavishdevar.librepods.presentation.screens.LongPress
 import me.kavishdevar.librepods.presentation.screens.MicrophoneSettingsRoute
+import me.kavishdevar.librepods.presentation.screens.LiveTranslationScreen
+import me.kavishdevar.librepods.presentation.screens.LiveListenScreen
+import me.kavishdevar.librepods.presentation.screens.CameraControlScreen
+import me.kavishdevar.librepods.presentation.screens.BatteryHistoryScreen
 import me.kavishdevar.librepods.presentation.screens.OpenSourceLicensesScreen
 import me.kavishdevar.librepods.presentation.screens.PurchaseScreen
 import me.kavishdevar.librepods.presentation.screens.ReleaseNotesScreen
@@ -111,6 +115,10 @@ fun AppNavGraph(
                                 navigateToTroubleshooting = { navigate(Screen.Troubleshooting) },
                                 navigateToCallControlScreen = { navigate(Screen.CallControl(it)) },
                                 navigateToMicrophoneSettings = { navigate(Screen.MicrophoneSettings) },
+                                navigateToLiveListen = { navigate(Screen.LiveListen) },
+                                navigateToLiveTranslation = { navigate(Screen.LiveTranslation) },
+                                navigateToCameraControl = { navigate(Screen.CameraControl) },
+                                navigateToBatteryHistory = { navigate(Screen.BatteryHistory) },
                             )
                         }
 
@@ -128,7 +136,9 @@ fun AppNavGraph(
                                 navigateToPurchase = ::navigateToPurchase,
                                 navigateToTroubleshooting = { navigate(Screen.Troubleshooting) },
                                 navigateToOpenSourceLicenses = { navigate(Screen.OpenSourceLicenses) },
-                                navigateToReleaseNotesScreen = { navigate(Screen.ReleaseNotes) }
+                                navigateToReleaseNotesScreen = { navigate(Screen.ReleaseNotes) },
+                                navigateToBatteryHistory = { navigate(Screen.BatteryHistory) },
+                                navigateToLiveTranslation = { navigate(Screen.LiveTranslation) }
                             )
                         }
 
@@ -250,6 +260,11 @@ fun AppNavGraph(
                                 }
                             )
                         }
+
+                    Screen.LiveListen -> NavEntry(screen) { LiveListenScreen() }
+                    Screen.LiveTranslation -> NavEntry(screen) { LiveTranslationScreen() }
+                    Screen.CameraControl -> NavEntry(screen) { CameraControlScreen() }
+                    Screen.BatteryHistory -> NavEntry(screen) { BatteryHistoryScreen() }
 
                     is Screen.MicrophoneSettings ->
                         NavEntry(screen) {

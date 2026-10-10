@@ -145,7 +145,11 @@ fun AirPodsSettingsRoute(
     navigateToVersion: () -> Unit,
     navigateToTroubleshooting: () -> Unit,
     navigateToCallControlScreen: (action: String) -> Unit,
-    navigateToMicrophoneSettings: () -> Unit
+    navigateToMicrophoneSettings: () -> Unit,
+    navigateToLiveListen: () -> Unit = {},
+    navigateToLiveTranslation: () -> Unit = {},
+    navigateToCameraControl: () -> Unit = {},
+    navigateToBatteryHistory: () -> Unit = {}
 ) {
     val state by viewModel.uiState.collectAsState()
 
@@ -195,6 +199,10 @@ fun AirPodsSettingsRoute(
             navigateToTroubleshooting = navigateToTroubleshooting,
             navigateToCallControlScreen = navigateToCallControlScreen,
             navigateToMicrophoneSettings = navigateToMicrophoneSettings,
+            navigateToLiveListen = navigateToLiveListen,
+            navigateToLiveTranslation = navigateToLiveTranslation,
+            navigateToCameraControl = navigateToCameraControl,
+            navigateToBatteryHistory = navigateToBatteryHistory,
 
             activateDemoMode = viewModel::activateDemoMode,
             reconnectFromSavedMac = viewModel::reconnectFromSavedMac
@@ -240,6 +248,10 @@ fun AirPodsSettingsScreen(
 
         activateDemoMode: () -> Unit,
         reconnectFromSavedMac: () -> Unit,
+        navigateToLiveListen: () -> Unit = {},
+    navigateToLiveTranslation: () -> Unit = {},
+        navigateToCameraControl: () -> Unit = {},
+        navigateToBatteryHistory: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val sharedPreferences = context.getSharedPreferences("settings", MODE_PRIVATE)
@@ -362,6 +374,7 @@ fun AirPodsSettingsScreen(
                 item(key = "noise_control") {
                     NoiseControlSettings(
                         showOffListeningMode = state.offListeningMode,
+                        supportedModes = me.kavishdevar.librepods.data.availableListeningModes(capabilities, state.offListeningMode),
                         noiseControlModeValue = state.controlStates[AACPManager.Companion.ControlCommandIdentifiers.LISTENING_MODE]?.getOrNull(
                             0
                         )?.toInt() ?: 3,
@@ -421,7 +434,7 @@ fun AirPodsSettingsScreen(
 //                }
 
             item(key = "upgrade_button") {
-                if (!state.isPremium) {
+                if (state.billingReady && !state.isPremium) {
                     Spacer(modifier = Modifier.height(28.dp))
                     StyledButton(
                         onClick = navigateToPurchase,
@@ -504,6 +517,24 @@ fun AirPodsSettingsScreen(
                 )
             }
 
+            if (capabilities.contains(Capability.STEM_CONFIG)) {
+                item(key = "spacer_camera_remote") { Spacer(modifier = Modifier.height(16.dp)) }
+                item(key = "camera_remote") {
+                    StyledListItem(name = stringResource(R.string.camera_remote), onClick = navigateToCameraControl)
+                }
+            }
+            item(key = "spacer_live_translation") { Spacer(modifier = Modifier.height(16.dp)) }
+            item(key = "live_translation") {
+                StyledListItem(name = stringResource(R.string.live_translation), onClick = navigateToLiveTranslation)
+            }
+            item(key = "spacer_live_listen") { Spacer(modifier = Modifier.height(16.dp)) }
+            item(key = "live_listen") {
+                StyledListItem(
+                    name = stringResource(R.string.live_listen),
+                    description = stringResource(R.string.live_listen_description),
+                    onClick = navigateToLiveListen
+                )
+            }
             item(key = "spacer_microphone") { Spacer(modifier = Modifier.height(16.dp)) }
             item(key = "microphone") {
                 val id = AACPManager.Companion.ControlCommandIdentifiers.MIC_MODE
@@ -566,6 +597,7 @@ fun AirPodsSettingsScreen(
                 )
             }
 
+            if (capabilities.contains(Capability.LISTENING_MODE)) {
             item(key = "spacer_sleep_timer") { Spacer(modifier = Modifier.height(16.dp)) }
             item(key = "sleep_timer") {
                 SleepTimerSettings(
@@ -574,11 +606,13 @@ fun AirPodsSettingsScreen(
                         AACPManager.Companion.ControlCommandIdentifiers.LISTENING_MODE
                     ]?.getOrNull(0)?.toInt() ?: 1,
                     targetMode = SleepTimerManager.targetMode(context),
+                    availableModes = me.kavishdevar.librepods.data.availableListeningModes(capabilities, state.offListeningMode),
                     onStartTimer = { minutes, targetMode ->
                         SleepTimerManager.start(context, minutes, targetMode)
                     },
                     onCancelTimer = { SleepTimerManager.cancel(context) }
                 )
+            }
             }
 
             if (capabilities.contains(Capability.LOUD_SOUND_REDUCTION)) {
@@ -866,6 +900,7 @@ fun AirPodsSettingsScreen(
                                     )
                                 }
                             }
+                            BatteryHistoryPreview(onClick = navigateToBatteryHistory)
                         }
 
                         if (!BuildConfig.PLAY_BUILD) {
@@ -943,6 +978,7 @@ fun AirPodsSettingsScreen(
                                 )
                             }
                         }
+                        BatteryHistoryPreview(onClick = navigateToBatteryHistory)
                     }
 
                     if (!BuildConfig.PLAY_BUILD) {

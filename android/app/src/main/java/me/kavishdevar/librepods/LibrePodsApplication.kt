@@ -9,7 +9,7 @@ import io.github.libxposed.service.XposedServiceHelper
 import me.kavishdevar.librepods.billing.BillingManager
 import me.kavishdevar.librepods.billing.BillingProviderFactory
 import me.kavishdevar.librepods.utils.XposedServiceHolder
-import me.kavishdevar.librepods.utils.XposedState
+import me.kavishdevar.librepods.data.RemoteXposedPreferences
 
 class LibrePodsApplication: Application(), XposedServiceHelper.OnServiceListener, DefaultLifecycleObserver {
 
@@ -24,18 +24,15 @@ class LibrePodsApplication: Application(), XposedServiceHelper.OnServiceListener
 
     override fun onResume(owner: LifecycleOwner) {
         BillingManager.provider.queryPurchases()
-        XposedState.isAvailable = XposedServiceHolder.service != null
-        XposedState.bluetoothScopeEnabled = XposedServiceHolder.service?.scope?.contains("com.google.android.bluetooth") == true || XposedServiceHolder.service?.scope?.contains("com.android.bluetooth") == true
+        XposedServiceHolder.refreshScope()
+        RemoteXposedPreferences.requestRefresh()
     }
 
     override fun onServiceBind(service: XposedService) {
-        XposedServiceHolder.service = service
-        XposedState.isAvailable = true
-        XposedState.bluetoothScopeEnabled = XposedServiceHolder.service?.scope?.contains("com.google.android.bluetooth") == true || XposedServiceHolder.service?.scope?.contains("com.android.bluetooth") == true
+        XposedServiceHolder.bind(service)
     }
 
-    override fun onServiceDied(p0: XposedService) {
-        XposedServiceHolder.service = null
-        XposedState.isAvailable = false
+    override fun onServiceDied(service: XposedService) {
+        XposedServiceHolder.died(service)
     }
 }

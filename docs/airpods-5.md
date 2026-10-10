@@ -3,6 +3,12 @@
 Capability review: 2026-09-20. Model capabilities determine the settings menu;
 advertised Apple features do not by themselves prove Android protocol support.
 
+The [2026-10-06 parity review](airpods-5-parity-2026-10-06.md) compares Apple host
+features with the Android implementation, including the new phone-microphone
+Live Listen relay, conditional system on-device translation and restored Camera
+Remote controls. These additions need
+device acceptance; the comparison records features that remain unavailable.
+
 | Setting | AirPods 5 | AirPods 5 with Wireless Charging Case |
 | --- | --- | --- |
 | ANC, transparency, adaptive audio, off | Yes | Yes |

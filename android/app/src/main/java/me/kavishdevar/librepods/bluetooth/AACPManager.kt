@@ -21,6 +21,10 @@
 package me.kavishdevar.librepods.bluetooth
 
 import android.util.Log
+import android.bluetooth.BluetoothSocket
+import me.kavishdevar.librepods.BuildConfig
+import me.kavishdevar.librepods.utils.OwnedCallbackSlot
+import java.io.Closeable
 import me.kavishdevar.librepods.data.Capability
 import me.kavishdevar.librepods.data.CustomEq
 import java.nio.ByteBuffer
@@ -33,6 +37,8 @@ import kotlin.io.encoding.ExperimentalEncodingApi
  * constructing and parsing packets for communication with AirPods.
  */
 class AACPManager {
+    @Volatile private var listeningModes: (() -> List<Int>)? = null
+    internal fun setListeningModePolicy(policy: () -> List<Int>) { listeningModes = policy }
     private val TAG = "AACPManager[${System.identityHashCode(this)}]"
     companion object {
         @Suppress("unused")
@@ -123,8 +129,14 @@ class AACPManager {
             DYNAMIC_END_OF_CHARGE(0x3B);
 
             companion object {
+                private val byValue = arrayOfNulls<ControlCommandIdentifiers>(256).apply {
+                    for (identifier in entries) {
+                        val index = identifier.value.toInt() and 0xFF
+                        if (this[index] == null) this[index] = identifier
+                    }
+                }
                 fun fromByte(byte: Byte): ControlCommandIdentifiers? =
-                    entries.find { it.value == byte }
+                    byValue[byte.toInt() and 0xFF]
             }
         }
 
@@ -189,43 +201,99 @@ class AACPManager {
     var controlCommandListeners: MutableMap<ControlCommandIdentifiers, MutableList<ControlCommandListener>> =
         mutableMapOf()
 
+    @Volatile private var deviceStateGeneration = 0L
+
+    @Synchronized
+    internal fun beginDeviceSession(): Long {
+        resetDeviceState()
+        return deviceStateGeneration
+    }
+
+    internal fun isCurrentDeviceSession(generation: Long): Boolean = generation == deviceStateGeneration
+    internal fun captureDeviceSession(): Long = deviceStateGeneration
+
+    @Volatile
     var owns: Boolean = false
         private set
 
+    @Volatile
     var oldConnectedDevices: List<ConnectedDevice> = listOf()
         private set
 
+    @Volatile
     var connectedDevices: List<ConnectedDevice> = listOf()
         private set
 
+    @Volatile
     var audioSource: AudioSource? = null
         private set
 
-    var eqData = FloatArray(8)
-        private set
+    @Volatile private var storedEqData = FloatArray(8)
+    val eqData: FloatArray
+        get() = storedEqData.copyOf()
 
+    @Volatile
     var eqOnPhone: Boolean = false
         private set
 
+    @Volatile
     var eqOnMedia: Boolean = false
         private set
 
+    @Volatile
     var customEq: CustomEq = CustomEq(state = 1, low = 50, mid = 50, high = 50)
         private set
 
-    var customEqCallback: ((CustomEq) -> Unit)? = null
-
     @Synchronized
-    fun getControlCommandStatus(identifier: ControlCommandIdentifiers): ControlCommandStatus? {
-        return controlCommandStatusList.find { it.identifier == identifier }
+    internal fun setHeadphoneEqState(
+        eq: FloatArray, phone: Boolean, media: Boolean, canStore: () -> Boolean = { true }
+    ): Boolean {
+        require(eq.size == 8) { "EQ must be 8 floats" }
+        if (!canStore()) return false
+        storedEqData = eq.copyOf()
+        eqOnPhone = phone
+        eqOnMedia = media
+        return true
     }
 
     @Synchronized
+    internal fun setCustomEqState(value: CustomEq, canStore: () -> Boolean = { true }): Boolean {
+        if (!canStore()) return false
+        customEq = value
+        customEqCallbacks.dispatch { if (canStore()) it(value) }
+        return true
+    }
+
+    @Synchronized
+    private fun updateDeviceState(canStore: () -> Boolean, update: () -> Unit): Boolean {
+        if (!canStore()) return false
+        update()
+        return true
+    }
+
+    private val customEqCallbacks = OwnedCallbackSlot<(CustomEq) -> Unit>()
+    var customEqCallback: ((CustomEq) -> Unit)?
+        get() = customEqCallbacks.get()
+        set(value) { if (value == null) customEqCallbacks.clear() else customEqCallbacks.register(value) }
+
+    fun registerCustomEqCallback(listener: (CustomEq) -> Unit): Closeable = customEqCallbacks.register(listener)
+
+    @Synchronized
+    fun getControlCommandStatus(identifier: ControlCommandIdentifiers): ControlCommandStatus? {
+        return controlCommandStatusList.find { it.identifier == identifier }?.let { it.copy(value = it.value.copyOf()) }
+    }
+
+    @Synchronized
+    fun getControlCommandStatusSnapshot(): List<ControlCommandStatus> =
+        controlCommandStatusList.map { it.copy(value = it.value.copyOf()) }
+
+    @Synchronized
     internal fun setControlCommandStatusValue(
-        identifier: ControlCommandIdentifiers, value: ByteArray
-    ) {
+        identifier: ControlCommandIdentifiers, value: ByteArray, canStore: () -> Boolean = { true }
+    ): Boolean {
+        if (!canStore()) return false
         val index = controlCommandStatusList.indexOfFirst { it.identifier == identifier }
-        val status = ControlCommandStatus(identifier, value)
+        val status = ControlCommandStatus(identifier, value.copyOf())
         if (index >= 0) {
             controlCommandStatusList[index] = status
         } else {
@@ -236,14 +304,15 @@ class AACPManager {
             owns = value.isNotEmpty() && value[0] == 0x01.toByte()
         }
         controlCommandListeners[identifier]?.toList()?.forEach { listener ->
-            listener.onControlCommandReceived(ControlCommand(identifier.value, value))
+            if (canStore()) listener.onControlCommandReceived(ControlCommand(identifier.value, value.copyOf()))
         }
+        return true
     }
 
-    internal fun parseAndStoreControlCommand(packet: ByteArray): ControlCommand? {
+    internal fun parseAndStoreControlCommand(packet: ByteArray, canStore: () -> Boolean = { true }): ControlCommand? {
         val command = ControlCommand.fromByteArray(packet)
         val identifier = ControlCommandIdentifiers.fromByte(command.identifier) ?: return null
-        setControlCommandStatusValue(identifier, command.value)
+        if (!setControlCommandStatusValue(identifier, command.value, canStore)) return null
         return command
     }
 
@@ -268,7 +337,7 @@ class AACPManager {
     }
 
     fun parseStemPressResponse(data: ByteArray): Pair<StemPressType, StemPressBudType> {
-        Log.d(TAG, "Parsing Stem Press Response: ${data.joinToString(" ") { "%02X".format(it) }}")
+        if (BuildConfig.DEBUG) Log.d(TAG, "Parsing Stem Press Response: ${data.joinToString(" ") { "%02X".format(it) }}")
         if (data.size != 8) {
             throw IllegalArgumentException("Data array too short to parse Stem Press Response")
         }
@@ -346,44 +415,28 @@ class AACPManager {
     }
 
     fun parseProximityKeysResponse(data: ByteArray): Map<ProximityKeyType, ByteArray> {
-        Log.d(
-            TAG, "Parsing Proximity Keys Response: ${data.joinToString(" ") { "%02X".format(it) }}"
-        )
-        if (data.size < 4) {
-            throw IllegalArgumentException("Data array too short to parse Proximity Keys Response")
+        require(data.size >= 7 && hasExpectedHeader(data) && data[4] == Opcodes.PROXIMITY_KEYS_RSP) {
+            "Invalid proximity keys header"
         }
-        if (data[4] != Opcodes.PROXIMITY_KEYS_RSP) {
-            throw IllegalArgumentException("Data array does not start with PROXIMITY_KEYS_RSP opcode")
-        }
-        val keyCount = data[6].toInt()
+        val keyCount = data[6].toInt() and 0xFF
         val keys = mutableMapOf<ProximityKeyType, ByteArray>()
         var offset = 7
-        for (i in 0 until keyCount) {
-            Log.d(TAG, "Parsing Proximity Key $i")
-            if (offset + 3 >= data.size) {
-                throw IllegalArgumentException("Data array too short to parse Proximity Keys Response")
-            }
+        repeat(keyCount) {
+            // Firmware 9A348 has been reported to return only one complete key
+            // with a count of two. Accept complete entries at a clean boundary;
+            // a truncated entry must still fail without publishing any keys.
+            if (offset == data.size && keys.isNotEmpty()) return keys
+            require(data.size - offset >= 4) { "Truncated proximity key header" }
             val keyType = data[offset]
-            val keyLength = data[offset + 2].toInt()
-            Log.d(TAG, "Key Type: ${keyType.toString(16)}, Key Length: $keyLength")
+            val keyLength = data[offset + 2].toInt() and 0xFF
             offset += 4
-            if (offset + keyLength > data.size) {
-                throw IllegalArgumentException("Data array too short to parse Proximity Keys Response")
-            }
-            val key = ByteArray(keyLength)
-            System.arraycopy(data, offset, key, 0, keyLength)
-            try {
-                keys[ProximityKeyType.fromByte(keyType)] = key
-            } catch (e: Exception) {
-                Log.e(
-                    TAG, "incorrect key type received: $keyType, ${key.toHexString()}"
-                )
+            require(keyLength <= data.size - offset) { "Truncated proximity key value" }
+            val type = ProximityKeyType.entries.find { it.value == keyType }
+            if (type != null) {
+                require(keyLength == 16) { "Invalid proximity key length" }
+                keys[type] = data.copyOfRange(offset, offset + keyLength)
             }
             offset += keyLength
-            Log.d(
-                TAG, "Parsed Proximity Key: Type: ${keyType}, Length: $keyLength, Key: ${
-                key.joinToString(" ") { "%02X".format(it) }
-            }")
         }
         return keys
     }
@@ -400,7 +453,10 @@ class AACPManager {
     }
 
     @OptIn(ExperimentalStdlibApi::class)
-    fun receivePacket(packet: ByteArray) {
+    @JvmOverloads
+    fun receivePacket(packet: ByteArray, generation: Long = deviceStateGeneration, canReceive: () -> Boolean = { true }) {
+        val current = { isCurrentDeviceSession(generation) && canReceive() }
+        if (!current()) return
         if (!hasExpectedHeader(packet)) {
             Log.w(
                 TAG, "Received packet does not start with expected header: ${
@@ -417,187 +473,171 @@ class AACPManager {
             return
         }
 
-        when (val opcode = packet[4]) {
-            Opcodes.BATTERY_INFO -> {
-                callback?.onBatteryInfoReceived(packet)
-            }
-
-            Opcodes.CONTROL_COMMAND -> {
-                val controlCommand = try {
-                    parseAndStoreControlCommand(packet) ?: return
-                } catch (e: Exception) {
-                    Log.w(TAG, "Failed to parse control command: ${e.message}")
-                    callback?.onUnknownPacketReceived(packet)
-                    return
+        // Validate before dispatch: several service callbacks read fixed offsets.
+        // A truncated packet must not escape into the socket reader and end a session.
+        if (!hasCompleteAacpPayload(packet)) {
+            Log.w(TAG, "Truncated opcode ${packet[4]}: ${packet.size} bytes")
+            return
+        }
+        try {
+            when (val opcode = packet[4]) {
+                Opcodes.BATTERY_INFO -> {
+                    if (current()) callback?.onBatteryInfoReceived(packet)
                 }
-                Log.d(
-                    TAG,
-                    "Control command received: ${controlCommand.identifier.toHexString()} - ${
-                        controlCommand.value.joinToString(" ") { "%02X".format(it) }
-                    }")
 
-                val controlCommandListText = try {
-                    controlCommandStatusList.joinToString(", ") { it ->
-                        "${it.identifier.name} (${it.identifier.value.toHexString()}) - ${
-                            it.value.joinToString(
-                                " "
-                            ) { "%02X".format(it) }
-                        }"
+                Opcodes.CONTROL_COMMAND -> {
+                    val controlCommand = try {
+                        parseAndStoreControlCommand(packet, current) ?: return
+                    } catch (e: Exception) {
+                        Log.w(TAG, "Failed to parse control command: ${e.message}")
+                        if (current()) callback?.onUnknownPacketReceived(packet)
+                        return
                     }
-                } catch (e: Exception) {
-                    e.message
-                }
-
-                Log.d(
-                    TAG, "Control command list is now: $controlCommandListText"
-                )
-
-                val controlCommandIdentifier =
-                    ControlCommandIdentifiers.fromByte(controlCommand.identifier)
-                if (controlCommandIdentifier == ControlCommandIdentifiers.OWNS_CONNECTION) {
-                    callback?.onOwnershipChangeReceived(owns)
-                }
-
-                callback?.onControlCommandReceived(packet)
-            }
-
-            Opcodes.EAR_DETECTION -> {
-                callback?.onEarDetectionReceived(packet)
-            }
-
-            Opcodes.CONVERSATION_AWARENESS -> {
-                callback?.onConversationAwarenessReceived(packet)
-            }
-
-            Opcodes.HEADTRACKING -> {
-                if (packet.size < 70) {
-                    Log.w(
-                        TAG, "Received HEADTRACKING packet too short: ${
-                        packet.joinToString(" ") {
-                            "%02X".format(it)
-                        }
-                    }")
-                    return
-                }
-                callback?.onHeadTrackingReceived(packet)
-            }
-
-            Opcodes.PROXIMITY_KEYS_RSP -> {
-                callback?.onProximityKeysReceived(packet)
-            }
-
-            Opcodes.STEM_PRESS -> {
-                callback?.onStemPressReceived(packet)
-            }
-
-            Opcodes.AUDIO_SOURCE -> {
-                try {
-                    val (mac, type) = parseAudioSourceResponse(packet)
-                    audioSource = AudioSource(mac, type)
-                } catch (e: Exception) {
-                    Log.e(TAG, "Error parsing audio source response: ${e.message}")
-                }
-                callback?.onAudioSourceReceived(packet)
-            }
-
-            Opcodes.CONNECTED_DEVICES -> {
-                oldConnectedDevices = connectedDevices
-                connectedDevices = parseConnectedDevicesResponse(packet)
-                callback?.onConnectedDevicesReceived(connectedDevices)
-            }
-
-            Opcodes.SMART_ROUTING_RESP -> {
-                val packetString = packet.decodeToString()
-                val sender =
-                    packet.sliceArray(6..11).reversedArray().joinToString(":") { "%02X".format(it) }
-
-                // if (connectedDevices.find { it.mac == sender }?.type == null && packetString.contains("btName")) {
-                //     val nameStartIndex = packetString.indexOf("btName") + 8
-                //     val nameEndIndex = if (packetString.contains("other")) (packetString.indexOf("otherDevice") - 1) else (packetString.indexOf("nearbyAudio") - 1)
-                //     val name = packet.sliceArray(nameStartIndex..nameEndIndex).decodeToString()
-                //     connectedDevices.find { it.mac == sender }?.type = name
-                //     Log.d(TAG, "Device $sender is named $name")
-                // } // doesn't work, it's different for Mac and iPad. just hardcoding for now
-                if ("iPad" in packetString) {
-                    connectedDevices.find { it.mac == sender }?.type = "iPad"
-                } else if ("Mac" in packetString) {
-                    connectedDevices.find { it.mac == sender }?.type = "Mac"
-                } else if ("iPhone" in packetString) { // not sure if this is it - don't have an iphone
-                    connectedDevices.find { it.mac == sender }?.type = "iPhone"
-                } else if ("Linux" in packetString) {
-                    connectedDevices.find { it.mac == sender }?.type = "Linux"
-                } else if ("Android" in packetString) {
-                    connectedDevices.find { it.mac == sender }?.type = "Android"
-                }
-                Log.d(
-                    TAG,
-                    "Smart Routing Response from $sender: $packetString, type: ${connectedDevices.find { it.mac == sender }?.type}"
-                )
-                if (packetString.contains("SetOwnershipToFalse")) {
-                    callback?.onOwnershipToFalseRequest(
-                        sender,
-                        packetString.contains("ReverseBannerTapped")
-                    )
-                }
-                if (packetString.contains("ShowNearbyUI")) {
-                    callback?.onShowNearbyUI(sender)
-                }
-            }
-
-            Opcodes.HEADPHONE_ACCOMMODATION -> {
-                if (packet.size != 140) {
-                    Log.w(
+                    if (BuildConfig.DEBUG) Log.d(
                         TAG,
-                        "Received HEADPHONE_ACCOMMODATION packet of unexpected size: ${packet.size}, expected 140"
-                    )
-                    return
+                        "Control command received: ${controlCommand.identifier.toHexString()} - ${
+                            controlCommand.value.joinToString(" ") { "%02X".format(it) }
+                        }")
+
+                    if (current() && controlCommand.identifier == ControlCommandIdentifiers.OWNS_CONNECTION.value) {
+                        callback?.onOwnershipChangeReceived(owns)
+                    }
+
+                    if (current()) callback?.onControlCommandReceived(packet)
                 }
-                if (packet[6] != 0x84.toByte()) {
-                    Log.w(
+
+                Opcodes.EAR_DETECTION -> {
+                    if (current()) callback?.onEarDetectionReceived(packet)
+                }
+
+                Opcodes.CONVERSATION_AWARENESS -> {
+                    if (current()) callback?.onConversationAwarenessReceived(packet)
+                }
+
+                Opcodes.HEADTRACKING -> {
+                    if (packet.size < 70) {
+                        Log.w(
+                            TAG, "Received HEADTRACKING packet too short: ${
+                            packet.joinToString(" ") {
+                                "%02X".format(it)
+                            }
+                        }")
+                        return
+                    }
+                    if (current()) callback?.onHeadTrackingReceived(packet)
+                }
+
+                Opcodes.PROXIMITY_KEYS_RSP -> {
+                    if (current()) callback?.onProximityKeysReceived(packet)
+                }
+
+                Opcodes.STEM_PRESS -> {
+                    if (current()) callback?.onStemPressReceived(packet)
+                }
+
+                Opcodes.AUDIO_SOURCE -> {
+                    try {
+                        val (mac, type) = parseAudioSourceResponse(packet)
+                        if (!updateDeviceState(current) { audioSource = AudioSource(mac, type) }) return
+                    } catch (e: Exception) {
+                        Log.e(TAG, "Error parsing audio source response: ${e.message}")
+                    }
+                    if (current()) callback?.onAudioSourceReceived(packet)
+                }
+
+                Opcodes.CONNECTED_DEVICES -> {
+                    val parsed = parseConnectedDevicesResponse(packet)
+                    if (!updateDeviceState(current) {
+                        oldConnectedDevices = connectedDevices
+                        connectedDevices = parsed
+                    }) return
+                    if (current()) callback?.onConnectedDevicesReceived(parsed)
+                }
+
+                Opcodes.SMART_ROUTING_RESP -> {
+                    val packetString = packet.decodeToString()
+                    val sender =
+                        packet.sliceArray(6..11).reversedArray().joinToString(":") { "%02X".format(it) }
+
+                    // if (connectedDevices.find { it.mac == sender }?.type == null && packetString.contains("btName")) {
+                    //     val nameStartIndex = packetString.indexOf("btName") + 8
+                    //     val nameEndIndex = if (packetString.contains("other")) (packetString.indexOf("otherDevice") - 1) else (packetString.indexOf("nearbyAudio") - 1)
+                    //     val name = packet.sliceArray(nameStartIndex..nameEndIndex).decodeToString()
+                    //     connectedDevices.find { it.mac == sender }?.type = name
+                    //     Log.d(TAG, "Device $sender is named $name")
+                    // } // doesn't work, it's different for Mac and iPad. just hardcoding for now
+                    val reportedType = listOf("iPad", "Mac", "iPhone", "Linux", "Android")
+                        .firstOrNull { it in packetString }
+                    if (!updateDeviceState(current) {
+                        if (reportedType != null) connectedDevices.find { it.mac == sender }?.type = reportedType
+                    }) return
+                    if (BuildConfig.DEBUG) Log.d(
                         TAG,
-                        "Received HEADPHONE_ACCOMMODATION packet with unexpected identifier: ${packet[6].toHexString()}, expected 0x84"
+                        "Smart Routing Response from $sender: $packetString, type: ${connectedDevices.find { it.mac == sender }?.type}"
                     )
-                    return
+                    if (current() && packetString.contains("SetOwnershipToFalse")) {
+                        callback?.onOwnershipToFalseRequest(
+                            sender,
+                            packetString.contains("ReverseBannerTapped")
+                        )
+                    }
+                    if (current() && packetString.contains("ShowNearbyUI")) {
+                        callback?.onShowNearbyUI(sender)
+                    }
                 }
 
-                eqOnMedia = (packet[10] == 0x01.toByte())
-                eqOnPhone = (packet[11] == 0x01.toByte())
-                // there are 4 eqs. i am not sure what those are for, maybe all 4 listening modes, or maybe phone+media left+right, but then there shouldn't be another flag for phone/media visible. just directly the EQ... weird.
-                // the EQs are little endian floats
-                val eq1 =
-                    ByteBuffer.wrap(packet, 12, 32).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
-                ByteBuffer.wrap(packet, 44, 32).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
-                ByteBuffer.wrap(packet, 76, 32).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
-                ByteBuffer.wrap(packet, 108, 32).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
+                Opcodes.HEADPHONE_ACCOMMODATION -> {
+                    if (packet.size != 140) {
+                        Log.w(
+                            TAG,
+                            "Received HEADPHONE_ACCOMMODATION packet of unexpected size: ${packet.size}, expected 140"
+                        )
+                        return
+                    }
+                    if (packet[6] != 0x84.toByte()) {
+                        Log.w(
+                            TAG,
+                            "Received HEADPHONE_ACCOMMODATION packet with unexpected identifier: ${packet[6].toHexString()}, expected 0x84"
+                        )
+                        return
+                    }
 
-                // for now, taking just the first EQ
-                eqData = FloatArray(8) { i -> eq1.get(i) }
+                    // there are 4 eqs. i am not sure what those are for, maybe all 4 listening modes, or maybe phone+media left+right, but then there shouldn't be another flag for phone/media visible. just directly the EQ... weird.
+                    // the EQs are little endian floats
+                    val eq1 =
+                        ByteBuffer.wrap(packet, 12, 32).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
+                    // for now, taking just the first EQ
+                    val receivedEq = FloatArray(8) { i -> eq1.get(i) }
+                    if (!setHeadphoneEqState(receivedEq, packet[11] == 0x01.toByte(), packet[10] == 0x01.toByte(), current)) return
 
-                Log.d(
-                    TAG,
-                    "EQ Data set to: ${eqData.toList()}, eqOnPhone: $eqOnPhone, eqOnMedia: $eqOnMedia"
-                )
+                    if (BuildConfig.DEBUG) Log.d(
+                        TAG,
+                        "EQ Data set to: ${eqData.toList()}, eqOnPhone: $eqOnPhone, eqOnMedia: $eqOnMedia"
+                    )
 
-                callback?.onHeadphoneAccommodationReceived(eqData)
+                    if (current()) callback?.onHeadphoneAccommodationReceived(receivedEq)
+                }
+
+                Opcodes.INFORMATION -> {
+                    if (BuildConfig.DEBUG) Log.d(TAG, "Parsing Information Packet")
+                    val information = parseInformationPacket(packet)
+                    if (current()) callback?.onDeviceInformationReceived(information)
+                }
+
+                Opcodes.CUSTOM_EQ -> {
+                    if (BuildConfig.DEBUG) Log.d(TAG, "Parsing CUSTOM_EQ: ${packet.toHexString()}")
+                    val receivedEq = parseCustomEqPacket(packet)
+                    if (!setCustomEqState(receivedEq, current)) return
+                    if (current()) callback?.onCustomEqReceived(receivedEq)
+                }
+
+                else -> {
+                    if (BuildConfig.DEBUG) Log.d(TAG, "Unhandled opcode received: ${opcode.toHexString()}")
+                    if (current()) callback?.onUnknownPacketReceived(packet)
+                }
             }
-
-            Opcodes.INFORMATION -> {
-                Log.d(TAG, "Parsing Information Packet")
-                val information = parseInformationPacket(packet)
-                callback?.onDeviceInformationReceived(information)
-            }
-
-            Opcodes.CUSTOM_EQ -> {
-                Log.d(TAG, "Parsing CUSTOM_EQ: ${packet.toHexString()}")
-                customEq = parseCustomEqPacket(packet)
-                customEqCallback?.invoke(customEq)
-                callback?.onCustomEqReceived(customEq)
-            }
-
-            else -> {
-                Log.d(TAG, "Unhandled opcode received: ${opcode.toHexString()}")
-                callback?.onUnknownPacketReceived(packet)
-            }
+        } catch (e: IllegalArgumentException) {
+            Log.w(TAG, "Invalid AACP packet for opcode ${packet[4]}", e)
         }
     }
 
@@ -772,6 +812,7 @@ class AACPManager {
     }
 
     fun createRenamePacket(name: String): ByteArray {
+        require(me.kavishdevar.librepods.data.airPodsNameProblem(name) == null) { "Invalid AirPods name" }
         val nameBytes = name.toByteArray()
         val size = nameBytes.size
         val packet = ByteArray(5 + size)
@@ -885,23 +926,43 @@ class AACPManager {
     }
 
     fun sendMediaInformataion(selfMacAddress: String, streamingState: Boolean = false): Boolean {
-        if (selfMacAddress.length != 17 || !selfMacAddress.matches(Regex("([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}"))) {
-            // throw IllegalArgumentException("MAC address must be 6 bytes")
-            Log.d(TAG, "Invalid MAC address format, got: selfMacAddress=$selfMacAddress")
-            return false
+        val packet = createMediaInformationData(selfMacAddress, streamingState) ?: return false
+        return sendPacket(packet)
+    }
+
+    internal fun createMediaInformationData(selfMacAddress: String, streamingState: Boolean): ByteArray? {
+        val self = me.kavishdevar.librepods.data.batteryHistoryIdentity(selfMacAddress) ?: return null
+        val target = connectedDevices.asSequence()
+            .mapNotNull { me.kavishdevar.librepods.data.batteryHistoryIdentity(it.mac) }
+            .firstOrNull { it != self } ?: return null
+        return createDataPacket(createMediaInformationPacket(self, target, streamingState))
+    }
+
+    /** Capture one host list and preserve the established routing packet order. */
+    internal fun createTakeoverPackets(selfMacAddress: String, reverse: Boolean): List<ByteArray>? {
+        val self = me.kavishdevar.librepods.data.batteryHistoryIdentity(selfMacAddress) ?: return null
+        val targets = connectedDevices.mapNotNull { me.kavishdevar.librepods.data.batteryHistoryIdentity(it.mac) }
+            .filter { it != self }.distinct()
+        return buildList {
+            add(createDataPacket(createControlCommandPacket(ControlCommandIdentifiers.OWNS_CONNECTION.value, byteArrayOf(1))))
+            targets.firstOrNull()?.let { target ->
+                add(createDataPacket(createMediaInformationPacket(self, target, false)))
+                if (!reverse) add(createDataPacket(createSmartRoutingShowUIPacket(target)))
+            }
+            for (target in targets) add(createDataPacket(
+                if (reverse) createHijackReversedPacket(target) else createHijackRequestPacket(target)
+            ))
         }
-        Log.d(TAG, "SELFMAC: $selfMacAddress")
-        val targetMac = connectedDevices.find { it.mac != selfMacAddress }?.mac
-        if (targetMac == null) {
-            Log.w(TAG, "Cannot send Media Information packet: No connected device found")
-            return false
-        }
-        Log.d(TAG, "Sending Media Information packet to $targetMac")
-        return sendDataPacket(
-            createMediaInformationPacket(
-                selfMacAddress, targetMac, streamingState
-            )
-        )
+    }
+
+    internal fun sendTakeoverPackets(
+        selfMacAddress: String, reverse: Boolean, socket: BluetoothSocket, canSend: () -> Boolean
+    ): Boolean {
+        val generation = deviceStateGeneration
+        val current = { isCurrentDeviceSession(generation) && canSend() }
+        val packets = createTakeoverPackets(selfMacAddress, reverse) ?: return false
+        for (packet in packets) if (!sendPacket(packet, socket, current)) return false
+        return current()
     }
 
     fun createMediaInformationPacket(
@@ -1107,6 +1168,14 @@ class AACPManager {
         }
     }
 
+    internal fun createStemConfigValue(
+        singlePressCustomized: Boolean, doublePressCustomized: Boolean,
+        triplePressCustomized: Boolean, longPressCustomized: Boolean
+    ): Byte = ((if (singlePressCustomized) 0x01 else 0) or
+        (if (doublePressCustomized) 0x02 else 0) or
+        (if (triplePressCustomized) 0x04 else 0) or
+        (if (longPressCustomized) 0x08 else 0)).toByte()
+
     @OptIn(ExperimentalStdlibApi::class)
     fun sendStemConfigPacket(
         singlePressCustomized: Boolean = false,
@@ -1114,8 +1183,8 @@ class AACPManager {
         triplePressCustomized: Boolean = false,
         longPressCustomized: Boolean = false
     ): Boolean {
-        val value =
-            ((if (singlePressCustomized) 0x01 else 0) or (if (doublePressCustomized) 0x02 else 0) or (if (triplePressCustomized) 0x04 else 0) or (if (longPressCustomized) 0x08 else 0)).toByte()
+        val value = createStemConfigValue(singlePressCustomized, doublePressCustomized,
+            triplePressCustomized, longPressCustomized)
         Log.d(TAG, "Sending Stem Config Packet with value: ${value.toHexString()}")
         return sendControlCommand(
             ControlCommandIdentifiers.STEM_CONFIG.value, value
@@ -1124,33 +1193,41 @@ class AACPManager {
 
     @OptIn(ExperimentalStdlibApi::class)
     fun sendPacket(packet: ByteArray): Boolean {
-        try {
-            Log.d(TAG, "Sending packet: ${packet.joinToString(" ") { "%02X".format(it) }}")
+        val socket = BluetoothConnectionManager.aacpSocket ?: return false
+        return sendPacket(packet, socket)
+    }
 
-            if (packet[4] == Opcodes.CONTROL_COMMAND) {
-                val controlCommand = try {
-                    parseAndStoreControlCommand(packet) ?: return false
+    /** Queued settings retain the connection selected when the user edited them. */
+    @OptIn(ExperimentalStdlibApi::class)
+    fun sendPacket(packet: ByteArray, socket: BluetoothSocket, canSend: () -> Boolean = { true }): Boolean {
+        val generation = deviceStateGeneration
+        try {
+            if (packet.size < 5) return false
+            if (BuildConfig.DEBUG) Log.d(TAG, "Sending packet: ${packet.joinToString(" ") { "%02X".format(it) }}")
+
+            val controlCommand = if (packet[4] == Opcodes.CONTROL_COMMAND) {
+                try {
+                    ControlCommand.fromByteArray(packet).also {
+                        if (ControlCommandIdentifiers.fromByte(it.identifier) == null) return false
+                    }
                 } catch (e: Exception) {
                     Log.w(TAG, "Invalid control command: ${e.message}")
                     callback?.onUnknownPacketReceived(packet)
                     return false
                 }
-                Log.d(
-                    TAG, "Control command: ${controlCommand.identifier.toHexString()} - ${
-                    controlCommand.value.joinToString(" ") { "%02X".format(it) }
-                }")
+            } else null
+            val mode = controlCommand?.takeIf { it.identifier == ControlCommandIdentifiers.LISTENING_MODE.value }
+                ?.value?.firstOrNull()?.toInt()
+            val current = {
+                isCurrentDeviceSession(generation) && socket === BluetoothConnectionManager.aacpSocket && socket.isConnected && canSend() &&
+                    (mode == null || listeningModes?.let { mode in it() } != false)
             }
-
-            val socket = BluetoothConnectionManager.aacpSocket ?: return false
-
-            if (socket.isConnected) {
-                socket.outputStream?.write(packet)
-                socket.outputStream?.flush()
-                return true
-            } else {
-                Log.d(TAG, "Can't send packet: Socket not initialized or connected")
-                return false
+            if (!writeCurrentPacket(packet, current, { socket.outputStream })) return false
+            // Failed or retired writes cannot populate the cache for the current link.
+            if (controlCommand != null && current()) {
+                setControlCommandStatusValue(ControlCommandIdentifiers.fromByte(controlCommand.identifier)!!, controlCommand.value, current)
             }
+            return true
         } catch (e: Exception) {
             Log.e(TAG, "Error sending packet: ${e.message}")
             return false
@@ -1159,6 +1236,9 @@ class AACPManager {
 
     fun sendPhoneMediaEQ(eq: FloatArray, phone: Byte = 0x02.toByte(), media: Byte = 0x02.toByte()) {
         if (eq.size != 8) throw IllegalArgumentException("EQ must be 8 floats")
+        val socket = BluetoothConnectionManager.aacpSocket ?: return
+        val generation = deviceStateGeneration
+        val ownedEq = eq.copyOf()
         val header = byteArrayOf(
             0x04.toByte(),
             0x00.toByte(),
@@ -1176,20 +1256,21 @@ class AACPManager {
         val buffer = ByteBuffer.allocate(128).order(ByteOrder.LITTLE_ENDIAN)
         for (block in 0..3) {
             for (i in 0..7) {
-                buffer.putFloat(eq[i])
+                buffer.putFloat(ownedEq[i])
             }
         }
         val payload = buffer.array()
         val packet = header + payload
-        sendPacket(packet)
-        this.eqData = eq.copyOf()
-        this.eqOnPhone = phone == 0x01.toByte()
-        this.eqOnMedia = media == 0x01.toByte()
+        if (sendPacket(packet, socket)) {
+            setHeadphoneEqState(ownedEq, phone == 0x01.toByte(), media == 0x01.toByte()) {
+                isCurrentDeviceSession(generation) && socket === BluetoothConnectionManager.aacpSocket && socket.isConnected
+            }
+        }
     }
 
     fun parseAudioSourceResponse(data: ByteArray): Pair<String, AudioSourceType> {
-        Log.d(TAG, "Parsing Audio Source Response: ${data.joinToString(" ") { "%02X".format(it) }}")
-        if (data.size < 9) {
+
+        if (data.size < 13) {
             throw IllegalArgumentException("Data array too short to parse Audio Source Response")
         }
         if (data[4] != Opcodes.AUDIO_SOURCE) {
@@ -1204,17 +1285,18 @@ class AACPManager {
     }
 
     fun parseConnectedDevicesResponse(data: ByteArray): List<ConnectedDevice> {
-        Log.d(
+        if (BuildConfig.DEBUG) Log.d(
             TAG,
             "Parsing Connected Devices Response: ${data.joinToString(" ") { "%02X".format(it) }}"
         )
-        if (data.size < 8) {
+        if (data.size < 9) {
             throw IllegalArgumentException("Data array too short to parse Connected Devices Response")
         }
         if (data[4] != Opcodes.CONNECTED_DEVICES) {
             throw IllegalArgumentException("Data array does not start with CONNECTED_DEVICES opcode")
         }
-        val deviceCount = data[8].toInt()
+        val deviceCount = data[8].toInt() and 0xFF
+        require(deviceCount <= (data.size - 9) / 8) { "Truncated connected devices list" }
         val devices = mutableListOf<ConnectedDevice>()
 
         var offset = 9
@@ -1230,7 +1312,7 @@ class AACPManager {
             val mac = macBytes.joinToString(":") { "%02X".format(it) }
             val info1 = data[offset + 6]
             val info2 = data[offset + 7]
-            val existingDevice = devices.find { it.mac == mac }
+            val existingDevice = connectedDevices.find { it.mac == mac }
             devices.add(ConnectedDevice(mac, info1, info2, existingDevice?.type))
             offset += 8
         }
@@ -1258,6 +1340,7 @@ class AACPManager {
 
     @Synchronized
     internal fun resetDeviceState() {
+        deviceStateGeneration++
         controlCommandStatusList.clear()
         // Subscriptions belong to their observers, which explicitly unregister.
         // The same service and ViewModel survive a Bluetooth reconnection.
@@ -1265,9 +1348,14 @@ class AACPManager {
         oldConnectedDevices = listOf()
         connectedDevices = listOf()
         audioSource = null
+        storedEqData = FloatArray(8)
+        eqOnPhone = false
+        eqOnMedia = false
+        customEq = CustomEq(state = 1, low = 50, mid = 50, high = 50)
     }
 
     fun parseInformationPacket(packet: ByteArray): AirPodsInformation {
+        require(packet.size >= 7) { "Truncated information packet" }
         val data = packet.sliceArray(6 until packet.size)
 
         var index = 0
@@ -1285,7 +1373,8 @@ class AACPManager {
             strings.add(str)
         }
 
-        strings.removeAt(0) // I'm too lazy to adjust, just removing the first empty string
+        require(strings.isNotEmpty()) { "Information packet has no fields" }
+        strings.removeAt(0) // The first field precedes the device name.
 
         return AirPodsInformation(
             name = strings.getOrNull(0) ?: "",
@@ -1307,6 +1396,7 @@ class AACPManager {
     }
 
     fun parseCustomEqPacket(packet: ByteArray): CustomEq {
+        require(packet.size >= 13) { "Truncated custom EQ packet" }
         val data = packet.sliceArray(6 until packet.size)
 
         if (data.size < 7) {

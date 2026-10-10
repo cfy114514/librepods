@@ -10,9 +10,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import me.kavishdevar.librepods.billing.BillingManager
+import me.kavishdevar.librepods.billing.entitlementChanges
 
 data class PurchaseUiState(
     val isPremium: Boolean = false,
+    val billingReady: Boolean = false,
+    val billingError: Boolean = false,
     val price: String = ""
 )
 
@@ -26,8 +29,9 @@ class PurchaseViewModel(application: Application) : AndroidViewModel(application
 
     private fun observeBilling() {
         viewModelScope.launch {
-            BillingManager.provider.isPremium.collect { premium ->
-                _uiState.update { it.copy(isPremium = premium) }
+            BillingManager.provider.entitlementChanges().collect { entitlement ->
+                _uiState.update { it.copy(isPremium = entitlement.premium,
+                    billingReady = entitlement.ready, billingError = entitlement.failed) }
             }
         }
         viewModelScope.launch {
@@ -44,4 +48,6 @@ class PurchaseViewModel(application: Application) : AndroidViewModel(application
     fun restorePurchases() {
         BillingManager.provider.restorePurchases()
     }
+
+    fun refreshBilling() { BillingManager.provider.queryPurchases() }
 }

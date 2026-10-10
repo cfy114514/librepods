@@ -27,9 +27,7 @@ class ControlCommandRepository(
     fun getValue(
         identifier: ControlCommandIdentifiers
     ): ByteArray? {
-        return aacpManager.controlCommandStatusList
-            .find { it.identifier == identifier }
-            ?.value
+        return aacpManager.getControlCommandStatus(identifier)?.value
     }
 
     fun setValue(
@@ -63,7 +61,7 @@ class ControlCommandRepository(
     }
 
     fun getMap(): Map<ControlCommandIdentifiers, ByteArray> {
-        return aacpManager.controlCommandStatusList.associate {
+        return aacpManager.getControlCommandStatusSnapshot().associate {
             it.identifier to it.value
         }
     }

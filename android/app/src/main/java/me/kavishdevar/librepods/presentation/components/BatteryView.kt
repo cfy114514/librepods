@@ -34,8 +34,8 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.mutableStateOf
-import androidx.compose.runtime.remember
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.Text
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
@@ -48,6 +48,7 @@ import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.data.Battery
 import me.kavishdevar.librepods.data.BatteryComponent
 import me.kavishdevar.librepods.data.BatteryStatus
+import me.kavishdevar.librepods.data.isAvailableReading
 import kotlin.io.encoding.ExperimentalEncodingApi
 
 @Composable
@@ -56,15 +57,15 @@ fun BatteryView(
     budsRes: Int,
     caseRes: Int
 ) {
-    val left = batteryList.find { it.component == BatteryComponent.LEFT }
-    val right = batteryList.find { it.component == BatteryComponent.RIGHT }
-    val case = batteryList.find { it.component == BatteryComponent.CASE }
+    val left = batteryList.find { it.component == BatteryComponent.LEFT && it.isAvailableReading() }
+    val right = batteryList.find { it.component == BatteryComponent.RIGHT && it.isAvailableReading() }
+    val case = batteryList.find { it.component == BatteryComponent.CASE && it.isAvailableReading() }
 
     val leftLevel = left?.level ?: 0
     val rightLevel = right?.level ?: 0
     val caseLevel = case?.level ?: 0
 
-    val singleDisplayed = remember { mutableStateOf(false) }
+    val singleDisplayed = left != null && right != null && left.status == right.status && (leftLevel - rightLevel) in -3..3
 
     Box(
         modifier = Modifier.fillMaxWidth(),
@@ -86,41 +87,37 @@ fun BatteryView(
                         .padding(8.dp)
                 )
 
-                if (
-                    left?.status == right?.status &&
-                    (leftLevel - rightLevel) in -3..3
-                ) {
+                if (singleDisplayed) {
                     BatteryIndicator(
                         leftLevel.coerceAtMost(rightLevel),
-                        left?.status ?: BatteryStatus.NOT_CHARGING
+                        left.status
                     )
-                    singleDisplayed.value = true
                 } else {
-                    singleDisplayed.value = false
 
                     Row(
                         modifier = Modifier.fillMaxWidth(),
                         horizontalArrangement = Arrangement.Center
                     ) {
-                        if (leftLevel > 0 || left?.status != BatteryStatus.DISCONNECTED) {
+                        if (left != null) {
                             BatteryIndicator(
                                 leftLevel,
-                                left?.status ?: BatteryStatus.NOT_CHARGING,
+                                left.status,
                                 "\uDBC6\uDCE5"
                             )
                         }
 
-                        if (leftLevel > 0 && rightLevel > 0) {
+                        if (left != null && right != null) {
                             Spacer(modifier = Modifier.width(16.dp))
                         }
 
-                        if (rightLevel > 0 || right?.status != BatteryStatus.DISCONNECTED) {
+                        if (right != null) {
                             BatteryIndicator(
                                 rightLevel,
-                                right?.status ?: BatteryStatus.NOT_CHARGING,
+                                right.status,
                                 "\uDBC6\uDCE8"
                             )
                         }
+                        if (left == null && right == null) Text("—", style = MaterialTheme.typography.bodyMedium)
                     }
                 }
             }
@@ -137,13 +134,13 @@ fun BatteryView(
                         .padding(8.dp)
                 )
 
-                if (caseLevel > 0 || case?.status != BatteryStatus.DISCONNECTED) {
+                if (case != null) {
                     BatteryIndicator(
                         caseLevel,
-                        case?.status ?: BatteryStatus.NOT_CHARGING,
-                        prefix = if (!singleDisplayed.value) "\uDBC3\uDE6C" else ""
+                        case.status,
+                        prefix = if (!singleDisplayed) "\uDBC3\uDE6C" else ""
                     )
-                }
+                } else Text("—", style = MaterialTheme.typography.bodyMedium)
             }
         }
     }

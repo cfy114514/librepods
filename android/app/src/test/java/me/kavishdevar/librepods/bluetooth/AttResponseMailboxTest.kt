@@ -7,6 +7,17 @@ import org.junit.Assert.assertNull
 import org.junit.Test
 
 class AttResponseMailboxTest {
+    @Test fun matchingErrorReleasesRequestButUnrelatedAndShortErrorsDoNot() {
+        val mailbox = AttResponseMailbox()
+        val pending = mailbox.expect(0x0B, 0x0A)
+        mailbox.offer(byteArrayOf(1, 0x12, 0x18, 0, 3))
+        mailbox.offer(byteArrayOf(1, 0x0A))
+        assertNull(pending.await(0))
+        val error = byteArrayOf(1, 0x0A, 0x18, 0, 3)
+        mailbox.offer(error)
+        assertArrayEquals(error, pending.await(0))
+        mailbox.finish(pending)
+    }
     @Test fun unsolicitedNotificationsAndRepliesAreNotSavedForFutureRequests() {
         val mailbox = AttResponseMailbox()
         repeat(100_000) {

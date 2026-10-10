@@ -34,10 +34,12 @@ import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberUpdatedState
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -76,6 +78,12 @@ fun VerticalVolumeSlider(
 
     var dragFraction by remember { mutableFloatStateOf(initialFraction) }
     var isDragging by remember { mutableStateOf(false) }
+    var lastDragVolume by remember { mutableStateOf<Int?>(null) }
+    val currentOnVolumeChange by rememberUpdatedState(onVolumeChange)
+    val currentOnDragStateChange by rememberUpdatedState(onDragStateChange)
+    LaunchedEffect(displayFraction, maxVolume) {
+        if (isDragging && (displayFraction * maxVolume).roundToInt() != lastDragVolume) lastDragVolume = null
+    }
 
     var rawDragPosition by remember { mutableFloatStateOf(initialFraction) }
     var overscrollAmount by remember { mutableFloatStateOf(0f) }
@@ -83,7 +91,7 @@ fun VerticalVolumeSlider(
     val baseHeightPx = with(LocalDensity.current) { baseSliderHeight.toPx() }
 
     val animatedProgress by animateFloatAsState(
-        targetValue = dragFraction.coerceIn(0f, 1f),
+        targetValue = (if (isDragging) dragFraction else displayFraction).coerceIn(0f, 1f),
         animationSpec = spring(
             dampingRatio = Spring.DampingRatioLowBouncy,
             stiffness = Spring.StiffnessMedium
@@ -136,7 +144,7 @@ fun VerticalVolumeSlider(
                 .offset(y = offsetY)
                 .clip(RoundedCornerShape(dynamicCornerRadius))
                 .background(trackColor)
-                .pointerInput(Unit) {
+                .pointerInput(maxVolume) {
                     detectTapGestures { offset ->
                         val newFraction = 1f - (offset.y / size.height).coerceIn(0f, 1f)
                         dragFraction = newFraction
@@ -144,7 +152,7 @@ fun VerticalVolumeSlider(
                         overscrollAmount = 0f
 
                         val newVolume = (newFraction * maxVolume).roundToInt()
-                        onVolumeChange(newVolume)
+                        currentOnVolumeChange(newVolume)
                     }
                 }
                 .draggable(
@@ -161,20 +169,25 @@ fun VerticalVolumeSlider(
                         }
 
                         val newVolume = (dragFraction * maxVolume).roundToInt()
-                        onVolumeChange(newVolume)
+                        if (newVolume != lastDragVolume) {
+                            lastDragVolume = newVolume
+                            currentOnVolumeChange(newVolume)
+                        }
                     },
                     onDragStarted = {
                         isDragging = true
+                        lastDragVolume = null
                         dragFraction = displayFraction
                         rawDragPosition = displayFraction
                         overscrollAmount = 0f
-                        onDragStateChange(true)
+                        currentOnDragStateChange(true)
                     },
                     onDragStopped = {
                         isDragging = false
+                        lastDragVolume = null
                         overscrollAmount = 0f
                         rawDragPosition = dragFraction
-                        onDragStateChange(false)
+                        currentOnDragStateChange(false)
                     }
                 ),
             contentAlignment = Alignment.BottomCenter

@@ -86,7 +86,7 @@ fun ControlCenterNoiseControlSegmentedButton(
     selectedMode: NoiseControlMode,
     onModeSelected: (NoiseControlMode) -> Unit
 ) {
-    val selectedIndex = availableModes.indexOf(selectedMode).coerceAtLeast(0)
+    val selectedIndex = availableModes.indexOf(selectedMode)
     val density = LocalDensity.current
     var iconRowWidthPx by remember { mutableFloatStateOf(0f) }
     val itemCount = availableModes.size
@@ -103,7 +103,7 @@ fun ControlCenterNoiseControlSegmentedButton(
 
     val targetIndicatorStartPx = remember(selectedIndex, itemSlotWidthPx, iconAreaSizePx) {
         if (itemSlotWidthPx > 0) {
-            val slotCenterPx = (selectedIndex + 0.5f) * itemSlotWidthPx
+            val slotCenterPx = (selectedIndex.coerceAtLeast(0) + 0.5f) * itemSlotWidthPx
             slotCenterPx - (iconAreaSizePx / 2f)
         } else {
             0f
@@ -141,7 +141,7 @@ fun ControlCenterNoiseControlSegmentedButton(
                 .onSizeChanged { iconRowWidthPx = it.width.toFloat() },
             contentAlignment = Alignment.Center
         ) {
-            Box(
+            if (selectedIndex >= 0) Box(
                 Modifier
                     .align(Alignment.CenterStart)
                     .offset(x = indicatorOffset)

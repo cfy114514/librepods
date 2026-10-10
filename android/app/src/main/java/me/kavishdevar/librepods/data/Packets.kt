@@ -71,10 +71,14 @@ enum class NoiseControlMode {
     OFF,  NOISE_CANCELLATION, TRANSPARENCY, ADAPTIVE
 }
 
+internal fun ByteArray.hasPrefix(prefix: ByteArray): Boolean =
+    size >= prefix.size && prefix.indices.all { this[it] == prefix[it] }
+
 class AirPodsNotifications {
     companion object {
         const val AIRPODS_CONNECTED = "me.kavishdevar.librepods.AIRPODS_CONNECTED"
         const val AIRPODS_L2CAP_CONNECTED = "me.kavishdevar.librepods.AIRPODS_CONNECTED"
+        const val AIRPODS_ATT_CONNECTED = "me.kavishdevar.librepods.AIRPODS_ATT_CONNECTED"
         const val AIRPODS_DATA = "me.kavishdevar.librepods.AIRPODS_DATA"
         const val EAR_DETECTION_DATA = "me.kavishdevar.librepods.EAR_DETECTION_DATA"
         const val ANC_DATA = "me.kavishdevar.librepods.ANC_DATA"
@@ -94,6 +98,7 @@ class AirPodsNotifications {
         var status: List<Byte> = listOf(0x01, 0x01)
 
         fun setStatus(data: ByteArray) {
+            if (!isEarDetectionData(data)) return
             status = listOf(data[6], data[7])
         }
 
@@ -101,9 +106,7 @@ class AirPodsNotifications {
             if (data.size != 8) {
                 return false
             }
-            val prefixHex = notificationPrefix.joinToString("") { "%02x".format(it) }
-            val dataHex = data.joinToString("") { "%02x".format(it) }
-            return dataHex.startsWith(prefixHex)
+            return data.hasPrefix(notificationPrefix)
         }
     }
 
@@ -117,9 +120,7 @@ class AirPodsNotifications {
             if (data.size != 11) {
                 return false
             }
-            val prefixHex = notificationPrefix.joinToString("") { "%02x".format(it) }
-            val dataHex = data.joinToString("") { "%02x".format(it) }
-            return dataHex.startsWith(prefixHex)
+            return data.hasPrefix(notificationPrefix)
         }
 
         fun setStatus(data: ByteArray) {
@@ -142,7 +143,7 @@ class AirPodsNotifications {
             }
         }
 
-        val name: String =
+        val name: String get() =
             when (status) {
                 1 -> "OFF"
                 2 -> "ON"
@@ -154,25 +155,16 @@ class AirPodsNotifications {
     }
 
     class BatteryNotification {
+        private val notificationPrefix = byteArrayOf(0x04, 0x00, 0x04, 0x00, 0x04, 0x00)
         private var first: Battery = Battery(BatteryComponent.LEFT, 0, BatteryStatus.DISCONNECTED)
         private var second: Battery = Battery(BatteryComponent.RIGHT, 0, BatteryStatus.DISCONNECTED)
         private var case: Battery = Battery(BatteryComponent.CASE, 0, BatteryStatus.DISCONNECTED)
 
         fun isBatteryData(data: ByteArray): Boolean {
-            if (data.joinToString("") { "%02x".format(it) }.startsWith("040004000400")) {
-                Log.d("BatteryNotification", "Battery data starts with 040004000400. Most likely is a battery packet.")
-            } else {
-                return false
-            }
-            if (data.size != 22) {
-                Log.d("BatteryNotification", "Battery data size is not 22, probably being used with Airpods with fewer or more battery count.")
-                return false
-            }
-            Log.d("BatteryNotification", data.joinToString("") { "%02x".format(it) }.startsWith("040004000400").toString())
-            return data.joinToString("") { "%02x".format(it) }.startsWith("040004000400")
+            return data.size == 22 && data.hasPrefix(notificationPrefix)
         }
 
-        fun setBatteryDirect(
+        @Synchronized fun setBatteryDirect(
             leftLevel: Int,
             leftCharging: Boolean,
             rightLevel: Int,
@@ -180,12 +172,16 @@ class AirPodsNotifications {
             caseLevel: Int,
             caseCharging: Boolean
         ) {
-            first = Battery(BatteryComponent.LEFT, leftLevel, if (leftCharging) BatteryStatus.CHARGING else BatteryStatus.NOT_CHARGING)
-            second = Battery(BatteryComponent.RIGHT, rightLevel, if (rightCharging) BatteryStatus.CHARGING else BatteryStatus.NOT_CHARGING)
-            case = Battery(BatteryComponent.CASE, caseLevel, if (caseCharging) BatteryStatus.CHARGING else BatteryStatus.NOT_CHARGING)
+            first = validBattery(first, BatteryComponent.LEFT, leftLevel, if (leftCharging) BatteryStatus.CHARGING else BatteryStatus.NOT_CHARGING)
+            second = validBattery(second, BatteryComponent.RIGHT, rightLevel, if (rightCharging) BatteryStatus.CHARGING else BatteryStatus.NOT_CHARGING)
+            case = validBattery(case, BatteryComponent.CASE, caseLevel, if (caseCharging) BatteryStatus.CHARGING else BatteryStatus.NOT_CHARGING)
         }
 
-        fun setBattery(data: ByteArray) {
+        private fun validBattery(previous: Battery, component: Int, level: Int, status: Int): Battery =
+            if (level in 0..100) Battery(component, level, status)
+            else previous.copy(status = BatteryStatus.DISCONNECTED)
+
+        @Synchronized fun setBattery(data: ByteArray) {
             if (data.size != 22) {
                 return
             }
@@ -205,18 +201,28 @@ class AirPodsNotifications {
 //                Battery(data[17].toInt(), data[19].toInt(), data[20].toInt())
 //            }
 //            sometimes it shows battery as -1%, just skip all that and set it normally
-            first = Battery(
-                data[7].toInt(), data[9].toInt(), data[10].toInt()
-            )
-            second = Battery(
-                data[12].toInt(), data[14].toInt(), data[15].toInt()
-            )
-            case = Battery(
-                data[17].toInt(), data[19].toInt(), data[20].toInt()
-            )
+            // Components may arrive in either order. Invalid/sentinel readings
+            // preserve the last valid percentage and mark that component unavailable.
+            for (offset in listOf(7, 12, 17)) {
+                val component = data[offset].toInt() and 0xFF
+                val level = data[offset + 2].toInt() and 0xFF
+                val status = data[offset + 3].toInt() and 0xFF
+                when (component) {
+                    BatteryComponent.LEFT -> first = validBattery(first, component, level, status)
+                    BatteryComponent.RIGHT -> second = validBattery(second, component, level, status)
+                    BatteryComponent.CASE -> case = validBattery(case, component, level, status)
+                }
+            }
         }
 
-        fun getBattery(): List<Battery> {
+        /** Keep percentages for history consumers, but never label a previous link as current. */
+        @Synchronized fun invalidate() {
+            first = first.copy(status = BatteryStatus.DISCONNECTED)
+            second = second.copy(status = BatteryStatus.DISCONNECTED)
+            case = case.copy(status = BatteryStatus.DISCONNECTED)
+        }
+
+        @Synchronized fun getBattery(): List<Battery> {
             val left = if (first.component == BatteryComponent.LEFT) first else second
             val right = if (first.component == BatteryComponent.LEFT) second else first
             return listOf(left, right, case)
@@ -234,13 +240,13 @@ class AirPodsNotifications {
             if (data.size != 10) {
                 return false
             }
-            val prefixHex = NOTIFICATION_PREFIX.joinToString("") { "%02x".format(it) }
-            val dataHex = data.joinToString("") { "%02x".format(it) }
-            return dataHex.startsWith(prefixHex)
+            return data.hasPrefix(NOTIFICATION_PREFIX)
         }
 
-        fun setData(data: ByteArray) {
+        fun setData(data: ByteArray): Boolean {
+            if (!isConversationalAwarenessData(data)) return false
             status = data[9]
+            return true
         }
     }
 }
