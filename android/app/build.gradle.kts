@@ -1,6 +1,6 @@
 import java.util.Properties
 
-val appVersionName = "1.0.2-airpods5.4"
+val appVersionName = "1.0.3-airpods5.5"
 
 plugins {
     alias(libs.plugins.android.application)
@@ -54,7 +54,7 @@ android {
     defaultConfig {
         applicationId = "me.kavishdevar.librepods"
         targetSdk = 37
-        versionCode = 67
+        versionCode = 68
         versionName = appVersionName
     }
     buildTypes {

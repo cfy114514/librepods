@@ -68,6 +68,8 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.presentation.theme.DesignSystem
+import me.kavishdevar.librepods.presentation.theme.AppleSettingsCardShape
+import me.kavishdevar.librepods.presentation.theme.AppleSettingsCardCornerRadius
 import me.kavishdevar.librepods.presentation.theme.LocalDesignSystem
 import me.kavishdevar.librepods.presentation.theme.sectionHeader
 
@@ -85,6 +87,7 @@ fun StyledListItem(
     trailingContent: (@Composable () -> Unit)? = null
 ) {
     val m3eEnabled = LocalDesignSystem.current == DesignSystem.Material
+    val containerShape = if (m3eEnabled) RoundedCornerShape(16.dp) else AppleSettingsCardShape
     Column {
         title?.let {
             Box(
@@ -106,9 +109,9 @@ fun StyledListItem(
                 .heightIn(min = 48.dp)
                 .background(
                     if (m3eEnabled) Color.Transparent else MaterialTheme.colorScheme.surface,
-                    RoundedCornerShape(if (m3eEnabled) 16.dp else 28.dp)
+                    containerShape
                 )
-                .clip(RoundedCornerShape(if (m3eEnabled) 16.dp else 28.dp))
+                .clip(containerShape)
         ) {
             StyledListItemContent(
                 name = name,
@@ -224,13 +227,13 @@ private fun StyledListItemContent(
                         animatedBackgroundColor,
                         when {
                             (index == 0 && count == 1) -> {
-                                RoundedCornerShape(28.dp)
+                                AppleSettingsCardShape
                             }
 
                             (index == 0) -> {
                                 RoundedCornerShape(
-                                    topStart = 28.dp,
-                                    topEnd = 28.dp,
+                                    topStart = AppleSettingsCardCornerRadius,
+                                    topEnd = AppleSettingsCardCornerRadius,
                                     bottomStart = 0.dp,
                                     bottomEnd = 0.dp
                                 )
@@ -240,8 +243,8 @@ private fun StyledListItemContent(
                                 RoundedCornerShape(
                                     topStart = 0.dp,
                                     topEnd = 0.dp,
-                                    bottomStart = 28.dp,
-                                    bottomEnd = 28.dp
+                                    bottomStart = AppleSettingsCardCornerRadius,
+                                    bottomEnd = AppleSettingsCardCornerRadius
                                 )
                             }
 

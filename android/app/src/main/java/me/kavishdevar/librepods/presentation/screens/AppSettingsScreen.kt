@@ -217,8 +217,10 @@ fun AppSettingsScreen(
         )
 
         Spacer(modifier = Modifier.height(16.dp))
-        StyledListItem(name = stringResource(R.string.battery_history), onClick = navigateToBatteryHistory)
-        StyledListItem(name = stringResource(R.string.live_translation), onClick = navigateToLiveTranslation)
+        StyledList {
+            StyledListItem(name = stringResource(R.string.battery_history), onClick = navigateToBatteryHistory)
+            StyledListItem(name = stringResource(R.string.live_translation), onClick = navigateToLiveTranslation)
+        }
 
         if (state.connectionSuccessful) {
             StyledToggle(

@@ -38,7 +38,6 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
-import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -57,8 +56,6 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.remember
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.clip
-import androidx.compose.ui.draw.shadow
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.platform.LocalLayoutDirection
 import androidx.compose.ui.text.TextStyle
@@ -163,17 +160,8 @@ fun StyledScaffold(
         DesignSystem.Apple -> {
             Scaffold(
                 containerColor = MaterialTheme.colorScheme.surfaceContainer,
-                snackbarHost = { SnackbarHost(snackbarHostState) },
-                modifier = Modifier
-                    .then(
-                        if (!isDarkTheme) Modifier.shadow(
-                            elevation = 36.dp,
-                            shape = RoundedCornerShape(52.dp),
-                            ambientColor = Color.Black,
-                            spotColor = Color.Black
-                        ) else Modifier
-                    )
-                    .clip(RoundedCornerShape(52.dp))
+                // The Android window supplies the physical screen corners.
+                snackbarHost = { SnackbarHost(snackbarHostState) }
             ) { paddingValues ->
                 val topPadding = paddingValues.calculateTopPadding()
                 val startPadding = paddingValues.calculateLeftPadding(LocalLayoutDirection.current)

@@ -21,6 +21,7 @@ import androidx.compose.ui.tooling.preview.Preview
 import androidx.compose.ui.tooling.preview.Wallpapers.GREEN_DOMINATED_EXAMPLE
 import androidx.compose.ui.unit.dp
 import me.kavishdevar.librepods.presentation.theme.DesignSystem
+import me.kavishdevar.librepods.presentation.theme.AppleSettingsCardShape
 import me.kavishdevar.librepods.presentation.theme.LibrePodsTheme
 import me.kavishdevar.librepods.presentation.theme.LocalDesignSystem
 import me.kavishdevar.librepods.presentation.theme.sectionHeader
@@ -36,6 +37,7 @@ fun StyledList(
     scope.content()
 
     val m3eEnabled = LocalDesignSystem.current == DesignSystem.Material
+    val containerShape = if (m3eEnabled) RoundedCornerShape(24.dp) else AppleSettingsCardShape
 
     Column (modifier = modifier) {
         title?.let {
@@ -55,8 +57,8 @@ fun StyledList(
         Column(
             modifier = Modifier
                 .fillMaxWidth()
-                .background(if (m3eEnabled) Color.Transparent else MaterialTheme.colorScheme.surface, RoundedCornerShape(if (m3eEnabled) 24.dp else 28.dp))
-                .clip(RoundedCornerShape(if (m3eEnabled) 24.dp else 28.dp))
+                .background(if (m3eEnabled) Color.Transparent else MaterialTheme.colorScheme.surface, containerShape)
+                .clip(containerShape)
         ) {
             if (m3eEnabled && description != null) {
                 Text(

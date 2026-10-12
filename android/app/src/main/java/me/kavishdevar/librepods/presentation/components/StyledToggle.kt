@@ -63,6 +63,7 @@ import androidx.compose.ui.unit.sp
 import kotlinx.coroutines.launch
 import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.presentation.theme.DesignSystem
+import me.kavishdevar.librepods.presentation.theme.AppleSettingsCardShape
 import me.kavishdevar.librepods.presentation.theme.LibrePodsTheme
 import me.kavishdevar.librepods.presentation.theme.LocalDesignSystem
 import me.kavishdevar.librepods.presentation.theme.sectionHeader
@@ -79,6 +80,7 @@ fun StyledToggle(
     header: Boolean = false
 ) {
     val m3eEnabled = LocalDesignSystem.current == DesignSystem.Material
+    val containerShape = if (m3eEnabled) RoundedCornerShape(if (header) 64.dp else 16.dp) else AppleSettingsCardShape
     Column(modifier = Modifier.padding(vertical = 12.dp)) {
         title?.let {
             Box(
@@ -99,9 +101,9 @@ fun StyledToggle(
                 .fillMaxWidth()
                 .background(
                     if (m3eEnabled) if (header) MaterialTheme.colorScheme.primaryContainer else Color.Transparent else MaterialTheme.colorScheme.surface,
-                    RoundedCornerShape(if (m3eEnabled) (if (header) 64.dp else 16.dp) else 28.dp)
+                    containerShape
                 )
-                .clip(RoundedCornerShape(if (m3eEnabled) (if (header) 64.dp else 16.dp) else 28.dp))
+                .clip(containerShape)
         ) {
             if (m3eEnabled) {
                 StyledToggleContent(

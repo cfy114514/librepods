@@ -96,6 +96,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.presentation.theme.DesignSystem
+import me.kavishdevar.librepods.presentation.theme.AppleSettingsCardShape
 import me.kavishdevar.librepods.presentation.theme.LibrePodsTheme
 import me.kavishdevar.librepods.presentation.theme.LocalDesignSystem
 import me.kavishdevar.librepods.utils.inspectDragGestures
@@ -717,7 +718,7 @@ fun StyledSlider(
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
-                            .background(backgroundColor, RoundedCornerShape(28.dp))
+                            .background(backgroundColor, AppleSettingsCardShape)
                             .padding(horizontal = 8.dp, vertical = 0.dp)
                             .heightIn(min = 58.dp),
                         contentAlignment = Alignment.Center
