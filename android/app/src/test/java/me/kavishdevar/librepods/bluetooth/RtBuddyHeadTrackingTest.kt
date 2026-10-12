@@ -12,35 +12,56 @@ class RtBuddyHeadTrackingTest {
     private fun frame(payload: ByteArray): ByteArray = byteArrayOf(4, 0, 4, 0, 0x17, 0, 0, 0, 0x10, 0,
         (payload.size and 255).toByte(), (payload.size ushr 8).toByte()) + payload
 
+    private fun descriptor(service: Int): ByteArray {
+        val properties = byteArrayOf(16, 0, 0, 9) + "AccessoryService".toByteArray() +
+            byteArrayOf(10, 0, 0, 9) + "devmotion6".toByteArray()
+        val descriptor = byteArrayOf(8, service.toByte(), 0x12, properties.size.toByte()) + properties
+        return byteArrayOf(0x2a, descriptor.size.toByte()) + descriptor
+    }
+
+    private fun motionPacket(service: Int) = live.copyOf().apply { this[19] = service.toByte() }
+
+    private fun AACPManager.observe(
+        discovery: () -> Unit = {},
+        motion: (HeadTrackingMotion) -> Unit = {}
+    ) {
+        setPacketCallback(Proxy.newProxyInstance(AACPManager.PacketCallback::class.java.classLoader,
+            arrayOf(AACPManager.PacketCallback::class.java)) { _, method, args ->
+            when (method.name) {
+                "onHeadTrackingServiceDiscovered" -> discovery()
+                "onHeadTrackingReceived" -> motion(args!![0] as HeadTrackingMotion)
+            }
+            null
+        } as AACPManager.PacketCallback)
+    }
+
     @Test fun capturedMotionAndSequenceVarintGrowthHaveIdenticalAxes() {
-        val expected = RtBuddyHeadTracking.Motion(15, -20877, 17088, -1412, 76, -2)
-        assertEquals(expected, RtBuddyHeadTracking.motion(live))
+        val expected = HeadTrackingMotion(15, -20877, 17088, -1412, 76, -2)
+        assertEquals(expected, RtBuddyHeadTracking.parse(live)?.motion)
         val sequence128 = frame(byteArrayOf(8, 0x80.toByte(), 1) + live.copyOfRange(14, live.size))
-        assertEquals(expected, RtBuddyHeadTracking.motion(sequence128))
+        assertEquals(expected, RtBuddyHeadTracking.parse(sequence128)?.motion)
         val sequence16384 = frame(byteArrayOf(8, 0x80.toByte(), 0x80.toByte(), 1) + live.copyOfRange(14, live.size))
-        assertEquals(expected, RtBuddyHeadTracking.motion(sequence16384))
+        assertEquals(expected, RtBuddyHeadTracking.parse(sequence16384)?.motion)
     }
 
     @Test fun acknowledgementsAndDescriptorsNeverBecomeMotion() {
         val ack = frame(byteArrayOf(8, 1, 0x10, 1, 0x4a, 2, 8, 15))
         assertTrue(hasCompleteAacpPayload(ack))
-        assertNull(RtBuddyHeadTracking.motion(ack))
-        val properties = byteArrayOf(16, 0, 0, 9) + "AccessoryService".toByteArray() +
-            byteArrayOf(10, 0, 0, 9) + "devmotion6".toByteArray()
+        assertNull(RtBuddyHeadTracking.parse(ack)?.motion)
         for (id in listOf(6, 15, 16)) {
-            val descriptor = byteArrayOf(8, id.toByte(), 0x12, properties.size.toByte()) + properties
-            val packet = frame(byteArrayOf(8, 1, 0x10, 1, 0x2a, descriptor.size.toByte()) + descriptor)
-            assertEquals(id, RtBuddyHeadTracking.discoverService(packet))
-            assertNull(RtBuddyHeadTracking.motion(packet))
+            val packet = frame(byteArrayOf(8, 1, 0x10, 1) + descriptor(id))
+            val report = RtBuddyHeadTracking.parse(packet)
+            assertEquals(id, report?.discoveredService)
+            assertNull(report?.motion)
         }
     }
 
     @Test fun malformedOuterAndNestedLengthsAndUnexpectedReportFormatsAreRejected() {
-        for (length in live.indices) assertNull(RtBuddyHeadTracking.motion(live.copyOf(length)))
-        assertNull(RtBuddyHeadTracking.motion(live.copyOf().apply { this[10] = 1 }))
-        assertNull(RtBuddyHeadTracking.motion(live.copyOf().apply { this[21] = 0x7f }))
-        assertNull(RtBuddyHeadTracking.motion(live.copyOf().apply { this[31] = 2 }))
-        assertNull(RtBuddyHeadTracking.motion(live.copyOf() + 0))
+        for (length in live.indices) assertNull(RtBuddyHeadTracking.parse(live.copyOf(length))?.motion)
+        assertNull(RtBuddyHeadTracking.parse(live.copyOf().apply { this[10] = 1 })?.motion)
+        assertNull(RtBuddyHeadTracking.parse(live.copyOf().apply { this[21] = 0x7f })?.motion)
+        assertNull(RtBuddyHeadTracking.parse(live.copyOf().apply { this[31] = 2 })?.motion)
+        assertNull(RtBuddyHeadTracking.parse(live.copyOf() + 0)?.motion)
     }
 
     @Test fun dynamicallyDiscoveredStartAndStopUseTheSameServiceAndValidEnvelope() {
@@ -59,21 +80,11 @@ class RtBuddyHeadTrackingTest {
     }
 
     @Test fun discoveryIsSessionBoundAndOnlyMatchingMotionReachesTheCallback() {
-        val properties = byteArrayOf(16, 0, 0, 9) + "AccessoryService".toByteArray() +
-            byteArrayOf(10, 0, 0, 9) + "devmotion6".toByteArray()
-        val descriptor = byteArrayOf(8, 15, 0x12, properties.size.toByte()) + properties
-        val packet = frame(byteArrayOf(8, 1, 0x10, 1, 0x2a, descriptor.size.toByte()) + descriptor)
+        val packet = frame(byteArrayOf(8, 1, 0x10, 1) + descriptor(15))
         val manager = AACPManager()
         var discoveries = 0
-        var samples = 0
-        manager.setPacketCallback(Proxy.newProxyInstance(AACPManager.PacketCallback::class.java.classLoader,
-            arrayOf(AACPManager.PacketCallback::class.java)) { _, method, _ ->
-            when (method.name) {
-                "onHeadTrackingServiceDiscovered" -> discoveries++
-                "onHeadTrackingReceived" -> samples++
-            }
-            null
-        } as AACPManager.PacketCallback)
+        val samples = mutableListOf<HeadTrackingMotion>()
+        manager.observe(discovery = { discoveries++ }, motion = { samples.add(it) })
         val retired = manager.beginDeviceSession()
         val current = manager.beginDeviceSession()
         manager.receivePacket(packet, retired)
@@ -83,13 +94,71 @@ class RtBuddyHeadTrackingTest {
         manager.receivePacket(packet, current)
         assertEquals(15, manager.headTrackingService)
         assertEquals(1, discoveries)
-        assertEquals(0, samples)
+        assertTrue(samples.isEmpty())
         manager.receivePacket(live, current)
-        manager.receivePacket(live.copyOf().apply { this[19] = 16 }, current)
-        assertEquals(1, samples)
+        manager.receivePacket(motionPacket(16), current)
+        assertEquals(listOf(HeadTrackingMotion(15, -20877, 17088, -1412, 76, -2)), samples)
         manager.beginDeviceSession()
         assertNull(manager.headTrackingService)
         manager.receivePacket(live, current)
-        assertEquals(1, samples)
+        assertEquals(1, samples.size)
+    }
+
+    @Test fun aCombinedReportDiscoversBeforeFilteringAndDeliveringItsMotion() {
+        for (service in listOf(15, 16)) {
+            // Field order must not turn a combined report into a descriptor-only or motion-only event.
+            for (descriptorFirst in listOf(true, false)) {
+                val command = motionPacket(service).copyOfRange(12, live.size)
+                val packet = frame(if (descriptorFirst) descriptor(15) + command else command + descriptor(15))
+                val report = RtBuddyHeadTracking.parse(packet)
+                assertEquals(15, report?.discoveredService)
+                assertEquals(service, report?.motion?.service)
+                val manager = AACPManager()
+                val events = mutableListOf<String>()
+                manager.observe(discovery = {
+                    assertEquals(15, manager.headTrackingService)
+                    events.add("discovery")
+                }, motion = {
+                    assertEquals(HeadTrackingMotion(15, -20877, 17088, -1412, 76, -2), it)
+                    events.add("motion")
+                })
+                manager.receivePacket(packet, manager.beginDeviceSession())
+                assertEquals(if (service == 15) listOf("discovery", "motion") else listOf("discovery"), events)
+            }
+        }
+    }
+
+    @Test fun onlyLegacyServicesAreAcceptedUntilDiscoveryAndAfterSessionReset() {
+        val manager = AACPManager()
+        val services = mutableListOf<Int>()
+        manager.observe(motion = { services.add(it.service) })
+        val generation = manager.beginDeviceSession()
+        for (service in listOf(6, 14, 15, 16, 17)) manager.receivePacket(motionPacket(service), generation)
+        assertEquals(listOf(14, 16), services)
+        manager.receivePacket(frame(descriptor(15)), generation)
+        for (service in listOf(14, 15, 16)) manager.receivePacket(motionPacket(service), generation)
+        assertEquals(listOf(14, 16, 15), services)
+        val replacement = manager.beginDeviceSession()
+        for (service in listOf(14, 15, 16)) manager.receivePacket(motionPacket(service), replacement)
+        assertEquals(listOf(14, 16, 15, 14, 16), services)
+    }
+
+    @Test fun discoveryCallbackCannotDeliverCombinedMotionAfterInvalidatingTheSessionOrSocketGuard() {
+        val packet = frame(descriptor(15) + live.copyOfRange(12, live.size))
+        for (resetSession in listOf(true, false)) {
+            val manager = AACPManager()
+            var canReceive = true
+            var discoveries = 0
+            var samples = 0
+            manager.observe(discovery = {
+                discoveries++
+                if (resetSession) manager.beginDeviceSession() else canReceive = false
+            }, motion = { samples++ })
+            val generation = manager.beginDeviceSession()
+            manager.receivePacket(packet, generation) { canReceive }
+            assertEquals(1, discoveries)
+            assertEquals(0, samples)
+            if (resetSession) assertNull(manager.headTrackingService)
+        }
     }
 }

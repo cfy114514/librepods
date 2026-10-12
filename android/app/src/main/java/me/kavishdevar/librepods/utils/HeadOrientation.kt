@@ -20,6 +20,7 @@ package me.kavishdevar.librepods.utils
 
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import me.kavishdevar.librepods.bluetooth.HeadTrackingMotion
 import kotlin.math.roundToInt
 
 data class Orientation(val pitch: Float = 0f, val yaw: Float = 0f)
@@ -42,13 +43,7 @@ object HeadTracking {
     private const val ORIENTATION_OFFSET = 5500
 
     @Synchronized
-    fun processPacket(packet: ByteArray) {
-        val motion = me.kavishdevar.librepods.bluetooth.RtBuddyHeadTracking.motion(packet) ?: return
-        processMotion(motion)
-    }
-
-    @Synchronized
-    internal fun processMotion(motion: me.kavishdevar.librepods.bluetooth.RtBuddyHeadTracking.Motion) {
+    internal fun processMotion(motion: HeadTrackingMotion) {
         val o1 = motion.o1
         val o2 = motion.o2
         val o3 = motion.o3

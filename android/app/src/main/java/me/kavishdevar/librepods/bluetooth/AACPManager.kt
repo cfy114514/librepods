@@ -325,7 +325,7 @@ class AACPManager {
         fun onConversationAwarenessReceived(conversationAwareness: ByteArray)
         fun onControlCommandReceived(controlCommand: ByteArray)
         fun onDeviceInformationReceived(deviceInformation: AirPodsInformation)
-        fun onHeadTrackingReceived(headTracking: ByteArray)
+        fun onHeadTrackingReceived(motion: HeadTrackingMotion)
         fun onHeadTrackingServiceDiscovered() {}
         fun onUnknownPacketReceived(packet: ByteArray)
         fun onProximityKeysReceived(proximityKeys: ByteArray)
@@ -519,16 +519,18 @@ class AACPManager {
                 }
 
                 Opcodes.HEADTRACKING -> {
-                    val discovered = RtBuddyHeadTracking.discoverService(packet)
+                    val report = RtBuddyHeadTracking.parse(packet) ?: return
+                    val discovered = report.discoveredService
                     if (discovered != null && discovered != headTrackingService && updateDeviceState(current) {
                             headTrackingService = discovered
                         }) {
                         if (current()) callback?.onHeadTrackingServiceDiscovered()
                     }
-                    val motion = RtBuddyHeadTracking.motion(packet) ?: return
+                    val motion = report.motion ?: return
                     val service = headTrackingService
-                    if ((service != null && motion.service == service || service == null && motion.service in listOf(14, 16)) && current()) {
-                        callback?.onHeadTrackingReceived(packet)
+                    if ((service != null && motion.service == service ||
+                            service == null && (motion.service == 14 || motion.service == 16)) && current()) {
+                        callback?.onHeadTrackingReceived(motion)
                     }
                 }
 

@@ -95,6 +95,7 @@ import me.kavishdevar.librepods.bluetooth.ATTHandles
 import me.kavishdevar.librepods.bluetooth.ATTManagerv2
 import me.kavishdevar.librepods.bluetooth.BLEManager
 import me.kavishdevar.librepods.bluetooth.BluetoothConnectionManager
+import me.kavishdevar.librepods.bluetooth.HeadTrackingMotion
 import me.kavishdevar.librepods.bluetooth.createBluetoothSocket
 import me.kavishdevar.librepods.data.AirPodsInstance
 import me.kavishdevar.librepods.data.AirPodsModels
@@ -1225,15 +1226,14 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             }
 
             @SuppressLint("NewApi")
-            override fun onHeadTrackingReceived(headTracking: ByteArray) {
+            override fun onHeadTrackingReceived(motion: HeadTrackingMotion) {
                 currentPacketPeer() ?: return
                 val applied = appliedHeadTrackingRequest
                 if (applied != null && applied.ticket.enabled && headTrackingRequestCurrent(applied)) {
-                    val motion = me.kavishdevar.librepods.bluetooth.RtBuddyHeadTracking.motion(headTracking) ?: return
-                    // AACP has validated the sensor payload length before this callback.
+                    // AACP has decoded and validated this sample; both consumers share it.
                     headTrackingStartup.received(applied)
                     HeadTracking.processMotion(motion)
-                    processHeadTrackingData(headTracking)
+                    processHeadTrackingData(motion)
                 }
             }
 
@@ -2481,14 +2481,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     }
 
     @RequiresApi(Build.VERSION_CODES.R)
-    fun processHeadTrackingData(data: ByteArray) {
-        val motion = me.kavishdevar.librepods.bluetooth.RtBuddyHeadTracking.motion(data) ?: return
-        val horizontal = motion.horizontal
-        val vertical = motion.vertical
+    private fun processHeadTrackingData(motion: HeadTrackingMotion) {
         try {
-            gestureDetector?.processHeadOrientation(horizontal, vertical)
+            gestureDetector?.processHeadOrientation(motion.horizontal, motion.vertical)
         } catch (e: Exception) {
-            Log.w(TAG, "gesture detector on ${data.toHexString()}: ${e.message}")
+            Log.w(TAG, "gesture detector on $motion: ${e.message}")
         }
     }
 

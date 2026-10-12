@@ -2,7 +2,7 @@ package me.kavishdevar.librepods.bluetooth
 
 /** SensorDataWX uses protobuf lengths/varints; absolute AACP byte offsets are not stable. */
 internal object RtBuddyHeadTracking {
-    data class Motion(val service: Int, val o1: Int, val o2: Int, val o3: Int, val horizontal: Int, val vertical: Int)
+    data class Report(val discoveredService: Int?, val motion: HeadTrackingMotion?)
     private data class Field(val number: Int, val value: Int? = null, val bytes: ByteArray? = null)
     private val serviceSignature = byteArrayOf(16, 0, 0, 9) + "AccessoryService".toByteArray(Charsets.US_ASCII) +
         byteArrayOf(10, 0, 0, 9) + "devmotion6".toByteArray(Charsets.US_ASCII)
@@ -12,13 +12,20 @@ internal object RtBuddyHeadTracking {
         u16(packet, 10) == packet.size - 12
 
     private fun wx(packet: ByteArray): List<Field>? {
-        if (!complete(packet) || !packet.copyOfRange(6, 10).contentEquals(byteArrayOf(0, 0, 0x10, 0))) return null
+        if (!complete(packet) || packet[6] != 0.toByte() || packet[7] != 0.toByte() ||
+            packet[8] != 0x10.toByte() || packet[9] != 0.toByte()) return null
         return fields(packet.copyOfRange(12, packet.size))
     }
 
-    fun discoverService(packet: ByteArray): Int? {
+    /** A frame may contain both a descriptor and motion; decode their shared envelope once. */
+    fun parse(packet: ByteArray): Report? {
+        val envelope = wx(packet) ?: return null
+        return Report(discoverService(envelope), motion(envelope))
+    }
+
+    private fun discoverService(envelope: List<Field>): Int? {
         val signature = serviceSignature
-        for (field in wx(packet) ?: return null) {
+        for (field in envelope) {
             if (field.number != 5 || field.bytes == null) continue
             val descriptor = fields(field.bytes) ?: continue
             val service = descriptor.singleOrNull { it.number == 1 }?.value ?: continue
@@ -30,14 +37,13 @@ internal object RtBuddyHeadTracking {
         return null
     }
 
-    fun motion(packet: ByteArray): Motion? {
-        val commands = (wx(packet) ?: return null).filter { it.number == 7 }
-        val command = fields(commands.singleOrNull()?.bytes ?: return null) ?: return null
+    private fun motion(envelope: List<Field>): HeadTrackingMotion? {
+        val command = fields(envelope.singleOrNull { it.number == 7 }?.bytes ?: return null) ?: return null
         val service = command.singleOrNull { it.number == 1 }?.value ?: return null
         val payload = command.singleOrNull { it.number == 3 }?.bytes ?: return null
         // The live A3441 devmotion6 report is 58 bytes, version 1, fused-motion format 3.
         if (payload.size != 58 || payload[0] != 1.toByte() || payload[9] != 3.toByte()) return null
-        return Motion(service, s16(payload, 20), s16(payload, 22), s16(payload, 24), s16(payload, 28), s16(payload, 30))
+        return HeadTrackingMotion(service, s16(payload, 20), s16(payload, 22), s16(payload, 24), s16(payload, 28), s16(payload, 30))
     }
 
     fun discoveryPacket(): ByteArray = byteArrayOf(4, 0, 4, 0, 0x17, 0, 0, 0, 0x10, 0, 4, 0, 8, 1, 0x22, 0)
