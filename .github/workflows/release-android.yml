@@ -1,0 +1,122 @@
+name: Publish signed Android release
+
+on:
+  workflow_dispatch:
+    inputs:
+      build_run_id:
+        description: Successful Android Debug CI run containing the signed release APK
+        required: true
+      release_tag:
+        description: Release tag matching the APK version (v followed by versionName)
+        required: true
+
+permissions:
+  actions: read
+  contents: write
+
+concurrency:
+  group: android-release-${{ inputs.release_tag }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Validate the source build
+        id: source
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$BUILD_RUN_ID" =~ ^[0-9]+$ ]]
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$BUILD_RUN_ID" > "$RUNNER_TEMP/source-build.json"
+          python3 - <<'PY'
+          import json, os
+          from pathlib import Path
+          run = json.loads((Path(os.environ['RUNNER_TEMP']) / 'source-build.json').read_text())
+          assert run['status'] == 'completed' and run['conclusion'] == 'success', 'Source build must pass'
+          assert run['path'] == '.github/workflows/ci-android.yml', 'Unexpected source workflow'
+          assert run['head_branch'] == 'main' and run['event'] == 'push', 'Release must come from a main push'
+          assert run['head_repository']['full_name'] == os.environ['GITHUB_REPOSITORY'], 'Unexpected source repository'
+          with open(os.environ['GITHUB_OUTPUT'], 'a') as output:
+              output.write(f"sha={run['head_sha']}\n")
+          PY
+
+      - name: Download the signed release APK
+        uses: actions/download-artifact@v4
+        with:
+          name: apk-foss-release-${{ inputs.build_run_id }}
+          run-id: ${{ inputs.build_run_id }}
+          github-token: ${{ github.token }}
+          path: release-input
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install APK verification tools
+        run: sdkmanager 'build-tools;36.0.0'
+
+      - name: Verify and prepare the release
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          BUILD_RUN_ID: ${{ inputs.build_run_id }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib, os, re, subprocess
+          from pathlib import Path
+          folder = Path('release-input')
+          apk = folder / 'app-foss-release.apk'
+          digest = hashlib.sha256(apk.read_bytes()).hexdigest()
+          checksums = [line.split() for line in (folder / 'SHA256SUMS').read_text().splitlines()]
+          assert [digest, 'app-foss-release.apk'] in checksums, 'APK checksum mismatch'
+          tools = Path(os.environ['ANDROID_HOME']) / 'build-tools/36.0.0'
+          cert = subprocess.check_output([str(tools / 'apksigner'), 'verify', '--print-certs', str(apk)], text=True)
+          signer = re.search(r'Signer #1 certificate SHA-256 digest: ([0-9a-fA-F]+)', cert)
+          assert signer and signer[1].lower() == '307239d0eba8708609ff4da13d45ebc59f48d14f641a94f3cbe999f375da5b1d', 'Release certificate mismatch'
+          metadata = subprocess.check_output([str(tools / 'aapt'), 'dump', 'badging', str(apk)], text=True)
+          package = metadata.splitlines()[0]
+          assert "name='me.kavishdevar.librepods'" in package, 'Package name mismatch'
+          assert 'application-debuggable' not in metadata, 'Debug APK cannot be released'
+          version = re.search(r"versionName='([^']+)'", package)[1]
+          assert re.fullmatch(r'[0-9A-Za-z.-]+', version), 'Invalid APK version'
+          assert os.environ['RELEASE_TAG'] == 'v' + version, 'Tag must match APK version'
+          destination = Path('release-output')
+          destination.mkdir()
+          name = f'LibrePods-{version}-foss-release.apk'
+          apk.rename(destination / name)
+          (destination / 'SHA256SUMS.txt').write_text(f'{digest}  {name}\n')
+          (destination / 'notes.txt').write_text(
+              '界面圆角调整与头部追踪性能优化。\n\n'
+              '- 页面外边缘交由 Android 系统处理，移除固定 52dp 的整页圆角裁剪与外框阴影。\n'
+              '- Apple 风格设置卡片统一使用 16dp 圆角；电量历史和实时翻译入口合并为同一分组。\n'
+              '- 运动包只解析一次，姿态与手势处理共享结果，保留原有轴映射、校准和识别阈值。\n\n'
+              '使用原包名与正式发布证书；源构建的单元测试、Lint、Debug/Release 构建全部通过。\n\n'
+              f"构建记录：https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['BUILD_RUN_ID']}\n"
+          )
+          print(package)
+          print('Original release certificate and APK checksum verified.')
+          PY
+
+      - name: Publish the verified APK
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_SHA: ${{ steps.source.outputs.sha }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh release create "$RELEASE_TAG" release-output/*.apk release-output/SHA256SUMS.txt \
+            --repo "$GITHUB_REPOSITORY" --target "$SOURCE_SHA" --latest \
+            --title "LibrePods $RELEASE_TAG — 圆角调整与头部追踪优化" \
+            --notes-file release-output/notes.txt
