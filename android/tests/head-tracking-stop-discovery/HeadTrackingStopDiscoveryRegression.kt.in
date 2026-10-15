@@ -1,0 +1,273 @@
+package me.kavishdevar.librepods.services
+
+import android.util.Log
+import java.io.Closeable
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.CoroutineContext
+import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import me.kavishdevar.librepods.bluetooth.AACPManager
+import me.kavishdevar.librepods.utils.HeadTracking
+import me.kavishdevar.librepods.utils.KeyedWorkSession
+
+typealias BluetoothSocket = Any
+private const val TAG = "HeadTrackingStopDiscoveryRegression"
+private object ServiceManager {
+    var owner: Fixture? = null
+    fun getService() = owner
+}
+private object BluetoothConnectionManager { var aacpSocket: BluetoothSocket? = null }
+private class Flags { var isClosed = false }
+private class Preferences {
+    var peer = "AA:BB:CC:DD:EE:FF"
+    var preferred = true
+    fun getString(key: String, default: String) = peer
+    fun getBoolean(key: String, default: Boolean) = preferred
+}
+private class ManualDispatcher : CoroutineDispatcher() {
+    private val pending = ArrayDeque<Runnable>()
+    override fun dispatch(context: CoroutineContext, block: Runnable) { pending.addLast(block) }
+    fun drain() { while (pending.isNotEmpty()) pending.removeFirst().run() }
+}
+
+// Observe the actual values offered/consumed; all scheduling and replacement is delegated
+// to the production KeyedWorkSession. The test never reconstructs a queued request.
+private class ObservedQueue<V : Any>(dispatcher: CoroutineDispatcher, consume: (V) -> Unit) : Closeable {
+    val offered = mutableListOf<V>()
+    val consumed = mutableListOf<V>()
+    private val errors = mutableListOf<Exception>()
+    private val delegate = KeyedWorkSession<Unit, V>(setOf(Unit), dispatcher,
+        onError = { errors.add(it) }) { value -> consumed.add(value); consume(value) }
+    val isClosed get() = delegate.isClosed
+    fun offer(key: Unit, value: V): Boolean = delegate.offer(key, value).also { if (it) offered.add(value) }
+    fun assertHealthy() { check(errors.isEmpty()) { "Command worker failed: ${errors.joinToString()}" } }
+    override fun close() = delegate.close()
+}
+
+private class Fixture : Closeable {
+@@REQUEST@@
+    val socket = Any()
+    val sharedPreferences = Preferences()
+    val serviceResources = Flags()
+    val headTrackingSession = HeadTrackingSession()
+    val aacpManager = AACPManager()
+    val headTrackingAttempts = AtomicLong()
+    val headTrackingStartup = HeadTrackingStartup<HeadTrackingRequest>()
+    val headTrackingStatus = headTrackingStartup.status
+    val dispatcher = ManualDispatcher()
+    // Startup timeout jobs remain queued; this harness controls command/discovery ordering,
+    // not elapsed time or the fallback timer. They are cancelled during fixture cleanup.
+    private val startupDispatcher = ManualDispatcher()
+    private val serviceScope = CoroutineScope(SupervisorJob() + startupDispatcher)
+    private var headTrackingStartupJob: Job? = null
+    private val headTrackingBindingLock = Any()
+    var appliedHeadTrackingRequest: HeadTrackingRequest? = null
+    val headTrackingCommands = ObservedQueue<HeadTrackingRequest>(dispatcher, ::writeHeadTrackingRequest)
+    val writes get() = aacpManager.writes
+    init {
+        ServiceManager.owner = this
+        BluetoothConnectionManager.aacpSocket = socket
+        aacpManager.callback = object : AACPManager.PacketCallback {
+            override fun onHeadTrackingServiceDiscovered() = this@Fixture.onHeadTrackingServiceDiscovered()
+        }
+    }
+    fun currentPacketPeer() = sharedPreferences.peer
+    fun isCurrentControlSocket(candidate: BluetoothSocket) = candidate === BluetoothConnectionManager.aacpSocket
+@@GUARD@@
+@@ENQUEUE@@
+@@DISCOVERY@@
+@@WRITE@@
+    fun start(preferred: Boolean = true, fallback: Boolean = false) {
+        sharedPreferences.preferred = preferred
+        enqueueHeadTrackingCommand(headTrackingSession.request(true, sharedPreferences.peer)!!)
+        dispatcher.drain()
+        check(writes.size == 1)
+        if (fallback) {
+            val first = appliedHeadTrackingRequest!!
+            headTrackingCommands.offer(Unit, first.copy(attempt = headTrackingAttempts.incrementAndGet(),
+                alternate = !first.alternate, retryOf = first.attempt))
+            dispatcher.drain()
+            check(writes.size == 2)
+            check(appliedHeadTrackingRequest!!.alternate != preferred)
+        }
+    }
+    fun queueStop(): HeadTrackingRequest {
+        enqueueHeadTrackingCommand(headTrackingSession.request(false, sharedPreferences.peer)!!)
+        return headTrackingCommands.offered.last().also { check(!it.ticket.enabled) }
+    }
+    fun discover(service: Int) { aacpManager.receivePacket(descriptor(service)) }
+    override fun close() {
+        headTrackingCommands.close()
+        serviceScope.cancel()
+        dispatcher.drain()
+        startupDispatcher.drain()
+        headTrackingSession.close()
+        HeadTracking.reset()
+        headTrackingCommands.assertHealthy()
+    }
+}
+
+private fun descriptor(service: Int): ByteArray {
+    val properties = byteArrayOf(16, 0, 0, 9) + "AccessoryService".toByteArray() +
+        byteArrayOf(10, 0, 0, 9) + "devmotion6".toByteArray()
+    val descriptor = byteArrayOf(8, service.toByte(), 0x12, properties.size.toByte()) + properties
+    val payload = byteArrayOf(0x2a, descriptor.size.toByte()) + descriptor
+    return byteArrayOf(4, 0, 4, 0, 0x17, 0, 0, 0, 0x10, 0, payload.size.toByte(), 0) + payload
+}
+
+private fun hex(value: String) = value.split(" ").map { it.toInt(16).toByte() }.toByteArray()
+// Preserve the existing protocol bytes, including the primary legacy STOP's 0x4e.
+// These fixtures assert behavior; they do not infer a correction to the device protocol.
+private val legacyAlternateStop = hex("04 00 04 00 17 00 00 00 10 00 0f 00 08 75 42 0b 08 10 10 02 1a 05 01 00 00 00 00")
+private val legacyPrimaryStop = hex("04 00 04 00 17 00 00 00 10 00 11 00 08 7e 10 02 42 0b 08 4e 10 02 1a 05 01 00 00 00 00")
+private fun discoveredPacket(service: Int, enabled: Boolean): ByteArray =
+    hex("04 00 04 00 17 00 00 00 10 00 0f 00 08 01 42 0b 08") + service.toByte() +
+        hex("10 02 1a 05 01") + if (enabled) hex("40 9c 00 00") else hex("00 00 00 00")
+
+private fun assertStopSurvives(before: Int?, after: Int, preferred: Boolean = true, fallback: Boolean = false,
+    discoverDuringSend: Boolean = false) {
+    Fixture().use { state ->
+        if (before != null) state.discover(before)
+        state.start(preferred, fallback)
+        val initialWrites = state.writes.size
+        val stop = state.queueStop()
+        check(stop.motionService == before)
+        check(stop.alternate == (preferred != fallback))
+        val expected = if (before != null) discoveredPacket(before, false)
+            else if (stop.alternate) legacyAlternateStop else legacyPrimaryStop
+        if (discoverDuringSend) state.aacpManager.beforeSend = { state.discover(after) }
+        else state.discover(after)
+        state.dispatcher.drain()
+        check(state.aacpManager.headTrackingService == after) { "Descriptor was not accepted" }
+        val stops = state.writes.drop(initialWrites)
+        check(state.headTrackingCommands.consumed.any { it === stop }) { "The actual queued STOP was not consumed" }
+        check(stops.size == 1) { "Expected one original STOP after descriptor $before -> $after, got ${stops.size}" }
+        check(stops.single().contentEquals(expected)) { "STOP bytes/target/variant changed after discovery" }
+        check(state.appliedHeadTrackingRequest === stop)
+        check(state.headTrackingStatus.value == HeadTrackingStatus.INACTIVE)
+        if (discoverDuringSend) check(state.aacpManager.sendGuards.last())
+    }
+}
+
+fun main() {
+    var passed = 0
+    val failed = mutableListOf<String>()
+    fun test(name: String, block: () -> Unit) {
+        try { block(); passed++; println("PASS $name") }
+        catch (error: Throwable) { failed.add(name); println("FAIL $name: $error") }
+    }
+    for (preferred in listOf(true, false)) {
+        for ((before, after) in listOf(null to 16, null to 15, 15 to 16)) {
+            test("queued STOP $before -> $after, preferredAlternate=$preferred") {
+                assertStopSurvives(before, after, preferred)
+            }
+        }
+        test("fallback STOP keeps alternate variant, preferredAlternate=$preferred") {
+            assertStopSurvives(null, 16, preferred, fallback = true)
+        }
+    }
+    test("descriptor during final send guard preserves captured STOP") {
+        assertStopSurvives(null, 16, discoverDuringSend = true)
+    }
+    test("unchanged descriptor retains ordinary STOP behavior") { assertStopSurvives(15, 15) }
+    for (invalid in listOf("new-start", "other-peer", "other-socket", "new-session", "other-service-owner", "closed-service", "closed-queue", "changed-preference")) {
+        test("old STOP rejected after $invalid") {
+            Fixture().use { state ->
+                state.start()
+                val stop = state.queueStop()
+                state.discover(16)
+                when (invalid) {
+                    "new-start" -> state.headTrackingSession.request(true, state.sharedPreferences.peer)
+                    "other-peer" -> state.sharedPreferences.peer = "11:22:33:44:55:66"
+                    "other-socket" -> BluetoothConnectionManager.aacpSocket = Any()
+                    "new-session" -> state.aacpManager.generation++
+                    "other-service-owner" -> ServiceManager.owner = null
+                    "closed-service" -> state.serviceResources.isClosed = true
+                    "closed-queue" -> state.headTrackingCommands.close()
+                    "changed-preference" -> state.sharedPreferences.preferred = false
+                }
+                check(!state.headTrackingRequestCurrent(stop))
+                state.dispatcher.drain()
+                check(state.writes.size == 1) { "Stale STOP reached output" }
+            }
+        }
+    }
+    test("new START replaces queued STOP and uses discovered service") {
+        Fixture().use { state ->
+            state.start()
+            val stop = state.queueStop()
+            state.discover(15)
+            state.enqueueHeadTrackingCommand(state.headTrackingSession.request(true, state.sharedPreferences.peer)!!)
+            check(!state.headTrackingRequestCurrent(stop))
+            state.dispatcher.drain()
+            check(state.writes.size == 2)
+            check(state.writes.last().contentEquals(discoveredPacket(15, true)))
+            check(state.appliedHeadTrackingRequest!!.ticket.enabled)
+        }
+    }
+    test("new START during final send guard rejects old STOP") {
+        Fixture().use { state ->
+            state.start()
+            val stop = state.queueStop()
+            state.aacpManager.beforeSend = {
+                state.enqueueHeadTrackingCommand(state.headTrackingSession.request(true, state.sharedPreferences.peer)!!)
+            }
+            state.dispatcher.drain()
+            check(!state.headTrackingRequestCurrent(stop))
+            check(state.aacpManager.sendGuards == listOf(true, false, true))
+            check(state.writes.size == 2)
+            check(state.appliedHeadTrackingRequest!!.ticket.enabled)
+        }
+    }
+    test("completed STOP stays stopped after discovery and next START uses new service") {
+        Fixture().use { state ->
+            state.start()
+            val stop = state.queueStop()
+            state.dispatcher.drain()
+            check(state.writes.last().contentEquals(legacyAlternateStop))
+            state.discover(15)
+            state.enqueueHeadTrackingCommand(stop.ticket)
+            state.dispatcher.drain()
+            check(state.writes.size == 2) { "Completed STOP was unnecessarily retargeted" }
+            state.enqueueHeadTrackingCommand(state.headTrackingSession.request(true, state.sharedPreferences.peer)!!)
+            state.dispatcher.drain()
+            check(state.writes.size == 3)
+            check(state.writes.last().contentEquals(discoveredPacket(15, true)))
+        }
+    }
+    test("discovery rejects old START and enqueues START for new service") {
+        Fixture().use { state ->
+            state.start()
+            val first = state.appliedHeadTrackingRequest!!
+            state.discover(16)
+            check(!state.headTrackingRequestCurrent(first))
+            state.dispatcher.drain()
+            check(state.writes.size == 2)
+            check(state.writes.last().contentEquals(discoveredPacket(16, true)))
+        }
+    }
+    test("preview release preserves gesture until its final release") {
+        Fixture().use { state ->
+            val preview = state.headTrackingSession.acquire(HeadTrackingSession.Consumer.PREVIEW, state.sharedPreferences.peer)!!
+            state.enqueueHeadTrackingCommand(state.headTrackingSession.capture())
+            state.dispatcher.drain()
+            val gesture = state.headTrackingSession.acquire(HeadTrackingSession.Consumer.GESTURE, state.sharedPreferences.peer)!!
+            state.enqueueHeadTrackingCommand(state.headTrackingSession.release(preview)!!)
+            state.dispatcher.drain()
+            check(state.writes.size == 1)
+            check(state.headTrackingSession.capture().enabled)
+            state.enqueueHeadTrackingCommand(state.headTrackingSession.release(gesture)!!)
+            state.discover(16)
+            state.dispatcher.drain()
+            check(state.writes.size == 2)
+            check(state.writes.last().contentEquals(legacyAlternateStop))
+        }
+    }
+    println("RESULT $passed passed, ${failed.size} failed; controlled JVM source extraction, no Android service/socket/device")
+    check(failed.isEmpty()) { "Failed: ${failed.joinToString()}" }
+}

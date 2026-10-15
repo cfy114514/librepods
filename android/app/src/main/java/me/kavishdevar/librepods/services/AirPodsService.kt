@@ -3802,7 +3802,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             request.ticket.peer != null && request.ticket.peer == me.kavishdevar.librepods.data.batteryHistoryIdentity(
                 sharedPreferences.getString("mac_address", "") ?: "") &&
             aacpManager.isCurrentDeviceSession(request.deviceSession) && isCurrentControlSocket(request.socket) &&
-            request.motionService == aacpManager.headTrackingService
+            // Discovery can replace a pending START, but must not discard its captured STOP.
+            (!request.ticket.enabled || request.motionService == aacpManager.headTrackingService)
 
     private fun writeHeadTrackingRequest(request: HeadTrackingRequest) {
         if (!headTrackingRequestCurrent(request)) return
