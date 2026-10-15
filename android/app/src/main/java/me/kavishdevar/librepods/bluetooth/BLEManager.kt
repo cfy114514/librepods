@@ -111,7 +111,7 @@ class BLEManager(private val context: Context) {
     private val proximityDecryptor = CachedProximityDecryptor(onError = {
         Log.e(TAG, "Unable to decrypt proximity data", it)
     })
-    private var currentGlobalLidState: Boolean? = null
+    private val lidState = BleLidState()
     private var lastBroadcastTime: Long = 0
     private val advertisementDeduplicator = BleAdvertisementDeduplicator()
 
@@ -262,7 +262,7 @@ class BLEManager(private val context: Context) {
             if (irkOwner != null && !irkOwner.equals(sharedPreferences.getString("mac_address", ""), ignoreCase = true)) return
             if (statusIrk != irkBase64) {
                 deviceStatusMap.clear()
-                currentGlobalLidState = null
+                lidState.reset()
                 statusIrk = irkBase64
             }
             if (!rpaVerifier.verify(address, irkBase64)) return
@@ -290,27 +290,16 @@ class BLEManager(private val context: Context) {
                 if (previousStatus == null) {
                     listener.onBroadcastFromNewAddress(parsedStatus)
                     Log.d(TAG, "New AirPods device detected: $address")
+                } else if (!parsedStatus.hasSameStateAs(previousStatus)) {
+                    listener.onDeviceStatusChanged(parsedStatus, previousStatus)
+                }
 
-                    if (currentGlobalLidState == null || currentGlobalLidState != parsedStatus.lidOpen) {
-                        currentGlobalLidState = parsedStatus.lidOpen
-                        listener.onLidStateChanged(parsedStatus.lidOpen)
-                        Log.d(TAG, "Lid state ${if (parsedStatus.lidOpen) "opened" else "closed"} (detected from new device)")
-                    }
-                } else {
-                    if (!parsedStatus.hasSameStateAs(previousStatus)) {
-                        listener.onDeviceStatusChanged(parsedStatus, previousStatus)
-                    }
+                if (lidState.observe(parsedStatus.lidOpen, result.timestampNanos)) {
+                    listener.onLidStateChanged(parsedStatus.lidOpen)
+                    Log.d(TAG, "Lid state ${if (parsedStatus.lidOpen) "opened" else "closed"}")
+                }
 
-                    if (parsedStatus.lidOpen != previousStatus.lidOpen) {
-                        val previousGlobalState = currentGlobalLidState
-                        currentGlobalLidState = parsedStatus.lidOpen
-
-                        if (previousGlobalState != parsedStatus.lidOpen) {
-                            listener.onLidStateChanged(parsedStatus.lidOpen)
-                            Log.d(TAG, "Lid state changed from $previousGlobalState to ${parsedStatus.lidOpen}")
-                        }
-                    }
-
+                if (previousStatus != null) {
                     if (parsedStatus.isLeftInEar != previousStatus.isLeftInEar ||
                         parsedStatus.isRightInEar != previousStatus.isRightInEar) {
                         listener.onEarStateChanged(
@@ -410,9 +399,8 @@ class BLEManager(private val context: Context) {
 
     private fun checkLidStateTimeout() {
         val currentTime = SystemClock.elapsedRealtime()
-        if (currentTime - lastBroadcastTime > LID_CLOSE_TIMEOUT_MS && currentGlobalLidState == true) {
+        if (lidState.closeIfTimedOut(currentTime, lastBroadcastTime, LID_CLOSE_TIMEOUT_MS)) {
             Log.d(TAG, "No broadcasts for ${LID_CLOSE_TIMEOUT_MS}ms, forcing lid state to closed")
-            currentGlobalLidState = false
             airPodsStatusListener?.onLidStateChanged(false)
         }
     }
