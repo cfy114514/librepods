@@ -476,6 +476,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         override fun onDeviceStatusChanged(
             device: BLEManager.AirPodsStatus, previousStatus: BLEManager.AirPodsStatus?
         ) {
+            val generation = takeoverGeneration.get()
             if (!config.bleOnlyMode && config.takeoverWhenDisconnected &&
                 device.connectionState == "Disconnected" && BluetoothConnectionManager.aacpSocket?.isConnected != true) {
                 Log.d(TAG, "Seems no device has taken over, we will.")
@@ -484,12 +485,13 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 val savedAddress = sharedPreferences.getString("mac_address", "") ?: ""
                 if (BluetoothAdapter.checkBluetoothAddress(savedAddress)) {
                     val bluetoothDevice = bluetoothAdapter.getRemoteDevice(savedAddress)
-                    serviceScope.launch {
-                        if (config.takeoverWhenDisconnected && !config.bleOnlyMode &&
-                            savedAddress.equals(macAddress, ignoreCase = true) && !serviceResources.isClosed) {
-                            audioProfileOwnership.claim(savedAddress)
-                            connectToSocket(bluetoothAdapter, bluetoothDevice)
-                        }
+                    if (config.takeoverWhenDisconnected && !config.bleOnlyMode &&
+                        savedAddress.equals(macAddress, ignoreCase = true) && !serviceResources.isClosed) {
+                        audioProfileOwnership.claim(savedAddress)
+                        enqueueSocketConnection(bluetoothAdapter, bluetoothDevice, manual = false, canConnect = {
+                            generation == takeoverGeneration.get() && config.takeoverWhenDisconnected && !config.bleOnlyMode &&
+                                savedAddress.equals(macAddress, ignoreCase = true) && !serviceResources.isClosed
+                        })
                     }
                 }
             }
@@ -1589,6 +1591,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     private fun revokeAudioRestore(ownershipLost: Boolean = false) {
         takeoverGeneration.incrementAndGet()
+        manualConnectionGeneration.incrementAndGet()
         audioProfileOwnership.revoke(ownershipLost)
         resetConversation()
         serviceScope.launch(Dispatchers.Main.immediate) { clearStaleA2dpConnectionReceiver() }
@@ -1793,6 +1796,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 notificationGeneration.incrementAndGet()
                 metadataSelection.incrementAndGet()
                 takeoverGeneration.incrementAndGet()
+                manualConnectionGeneration.incrementAndGet()
                 val previousHeadPeer = me.kavishdevar.librepods.data.batteryHistoryIdentity(macAddress)
                 macAddress = preferences.getString(key, "") ?: ""
                 if (previousHeadPeer != me.kavishdevar.librepods.data.batteryHistoryIdentity(macAddress)) HeadTracking.reset()
@@ -2881,7 +2885,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             } ?: return
             if (!takeoverCurrent(request) || !audioProfileOwnership.isCurrentMedia(media)) return
             // The primary connection timeout must not stall the routing request queue.
-            serviceScope.launch { if (takeoverCurrent(request)) connectToSocket(adapter, target) }
+            enqueueSocketConnection(adapter, target, manual = false, canConnect = { takeoverCurrent(request) })
         }
         showTakeoverIsland(request, null, IslandType.TAKING_OVER)
     }
@@ -2970,7 +2974,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         if (serviceResources.isClosed || config.bleOnlyMode) return
         val socket = BluetoothConnectionManager.aacpSocket
         if (socket?.isConnected == true) return
-        if (connectionInProgress.get() && device?.address != target.address) return
+        if (connectionAttempts.inProgress && device?.address != target.address) return
         device = target
         if (config.deviceName == "AirPods" && target.name != null) {
             config.deviceName = target.name ?: "AirPods"
@@ -2980,10 +2984,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         audioProfileOwnership.select(macAddress)
         sharedPreferences.edit { putString("mac_address", macAddress) }
         setMetadatas(target)
-        serviceScope.launch { connectToSocket(getSystemService(BluetoothManager::class.java).adapter, target) }
+        connectToSocket(getSystemService(BluetoothManager::class.java).adapter, target)
     }
 
-    private val connectionInProgress = AtomicBoolean(false)
+    private val connectionAttempts = ConnectionAttempts(serviceResources)
+    // A transport failure must not revoke the user's independent audio reconnect request.
+    private val manualConnectionGeneration = AtomicLong()
 
     internal fun shouldOpenAttChannel(model: AirPodsBase?): Boolean =
         // Known models without hearing features need neither ATT nor its framework lookup.
@@ -2993,35 +2999,34 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     fun connectToSocket(
         adapter: BluetoothAdapter, device: BluetoothDevice, manual: Boolean = false
     ) {
-        if (serviceResources.isClosed || !connectionInProgress.compareAndSet(false, true)) {
+        enqueueSocketConnection(adapter, device, manual)
+    }
+
+    private fun enqueueSocketConnection(
+        adapter: BluetoothAdapter, device: BluetoothDevice, manual: Boolean,
+        canConnect: () -> Boolean = { true }, afterConnect: (() -> Unit)? = null
+    ) {
+        // Admit before dispatch; disconnect must also cancel work still queued on IO.
+        val connection = connectionAttempts.begin(canConnect)
+        if (connection == null) {
             Log.d(TAG, "Connection already in progress or service stopped; ignoring request")
+            // Manual reconnect still requests audio when an automatic control attempt
+            // already owns admission. Its callback checks the captured user request.
+            if (afterConnect != null && !serviceResources.isClosed) serviceScope.launch { afterConnect() }
             return
         }
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            serviceScope.launch {
-                connectToSocketOnce(adapter, device, manual)
-            }.invokeOnCompletion { connectionInProgress.set(false) }
-            return
-        }
-        try {
-            connectToSocketOnce(adapter, device, manual)
-        } finally {
-            connectionInProgress.set(false)
-        }
+        serviceScope.launch {
+            connectToSocketOnce(adapter, device, manual, connection)
+            if (isActive && connectionAttempts.isCurrent(connection)) afterConnect?.invoke()
+        }.invokeOnCompletion { connectionAttempts.finish(connection) }
     }
 
     @SuppressLint("MissingPermission", "UnspecifiedRegisterReceiverFlag")
     private fun connectToSocketOnce(
-        adapter: BluetoothAdapter, device: BluetoothDevice, manual: Boolean
+        adapter: BluetoothAdapter, device: BluetoothDevice, manual: Boolean,
+        connection: ConnectionAttempts.Attempt
     ) {
-        if (serviceResources.isClosed || BluetoothConnectionManager.aacpSocket?.isConnected == true) return
-        // This method only runs off the main thread. Preserve MAC-before-handshake ordering,
-        // while a denied root prompt cannot delay foreground-service startup or block forever.
-        localMacLookupFinished.await(5500, TimeUnit.MILLISECONDS)
-        if (serviceResources.isClosed || !device.address.equals(macAddress, ignoreCase = true)) return
-        Log.d(TAG, "<LogCollector:Start> Connecting to socket")
-
-        val attempt = serviceResources.createChildScope()
+        val attempt = connection.resources
         var socket: BluetoothSocket? = null
         val pendingAttSocket = java.util.concurrent.atomic.AtomicReference<BluetoothSocket?>()
         var handedToReader = false
@@ -3060,7 +3065,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 BluetoothConnectionManager.aacpSocket === socket
 
         try {
-            serviceResources.track(attempt)
+            if (!connectionAttempts.isCurrent(connection) || BluetoothConnectionManager.aacpSocket?.isConnected == true) return
+            // Preserve MAC-before-handshake ordering without blocking the main thread.
+            localMacLookupFinished.await(5500, TimeUnit.MILLISECONDS)
+            if (!connectionAttempts.isCurrent(connection) || !device.address.equals(macAddress, ignoreCase = true)) return
+            attempt.ensureOpen()
+            Log.d(TAG, "<LogCollector:Start> Connecting to socket")
             timeoutJob = serviceScope.launch {
                 delay(5000)
                 if (connectionPhaseFinished.compareAndSet(false, true)) {
@@ -3083,7 +3093,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             attempt.ensureOpen()
 
             // Publish AACP without waiting for the optional hearing-feature channel.
-            serviceResources.whileOpen {
+            connectionAttempts.whileCurrent(connection) {
                 synchronized(BluetoothConnectionManager) {
                     attempt.ensureOpen()
                     if (!device.address.equals(sharedPreferences.getString("mac_address", ""), ignoreCase = true)) throw CancellationException("Selected AirPods changed")
@@ -3236,7 +3246,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 }
             }
         } catch (e: Exception) {
-            if (!serviceResources.isClosed && e !is CancellationException) {
+            if (connectionAttempts.isCurrent(connection) && e !is CancellationException) {
                 Log.d(TAG, "<LogCollector:Complete:Failed> Socket not connected, ${e.message}")
                 val reason = if (attempt.isClosed) "Bluetooth socket connection timed out" else e.localizedMessage
                 if (manual) sendToast("Couldn't connect to socket: $reason")
@@ -3245,7 +3255,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         } finally {
             connectionPhaseFinished.set(true)
             timeoutJob?.cancel()
-            if (!handedToReader) closeAttempt()
+            if (!handedToReader) closeAttempt(notifyDisconnect = true)
         }
     }
 
@@ -3273,6 +3283,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     fun disconnectAirPods() {
         if (serviceResources.isClosed || ServiceManager.getService() !== this) return
         revokeAudioRestore()
+        connectionAttempts.cancel()
         val retiredDevice: BluetoothDevice?
         val retiredSockets = synchronized(BluetoothConnectionManager) {
             val aacp = BluetoothConnectionManager.aacpSocket
@@ -3638,6 +3649,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         synchronized(renameBindingLock) { desiredRename = null; appliedRename = null }
         if (::batteryHistory.isInitialized) { batteryHistory.flush(); batteryHistory.close() }
         takeoverGeneration.incrementAndGet()
+        manualConnectionGeneration.incrementAndGet()
         audioProfileOwnership.revoke()
         cameraGeneration.incrementAndGet()
         cameraActive = false
@@ -3849,10 +3861,23 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             it.address == macAddress
         }
         val targetDevice = device ?: return
-        serviceScope.launch {
-            Log.d(TAG, "connecting to $macAddress")
-            connectToSocket(bluetoothAdapter, targetDevice, manual = true)
-            if (isActive && !serviceResources.isClosed) connectAudio(this@AirPodsService, targetDevice)
+        val generation = manualConnectionGeneration.get()
+        val current = {
+            !serviceResources.isClosed && generation == manualConnectionGeneration.get() &&
+                targetDevice.address.equals(macAddress, ignoreCase = true)
+        }
+        Log.d(TAG, "connecting to $macAddress")
+        enqueueSocketConnection(bluetoothAdapter, targetDevice, manual = true, canConnect = current) {
+            // Preserve manual audio reconnect after a control-channel failure, while a
+            // disconnect or selection change revokes this delayed routing request.
+            if (!current()) return@enqueueSocketConnection
+            val selection = audioProfileOwnership.captureSelection(targetDevice.address)
+                ?: return@enqueueSocketConnection
+            val ticket = audioProfileOwnership.beginExplicitConnectIfCurrent(selection, current)
+                ?: return@enqueueSocketConnection
+            serviceScope.launch(Dispatchers.Main.immediate) { clearStaleA2dpConnectionReceiver() }
+            connectAudioProfiles(this@AirPodsService, targetDevice, ticket, socket = null,
+                playWhenConnected = false, canConnect = current)
         }
     }
 }
