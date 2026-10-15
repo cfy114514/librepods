@@ -130,6 +130,8 @@ jobs:
             2>&1 | tee build/ci-att-reader.log
           python3 tests/head-tracking-stop-discovery/run.py \
             2>&1 | tee build/ci-head-tracking-stop.log
+          python3 tests/disconnect-notification/run.py \
+            2>&1 | tee build/ci-disconnect-notification.log
 
       - name: Run Android Lint
         id: lint

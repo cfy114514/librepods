@@ -801,22 +801,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 if (intent?.action == AirPodsNotifications.AIRPODS_CONNECTION_DETECTED) {
                     val detectedDevice = intent.getParcelableExtra("device", BluetoothDevice::class.java) ?: return
                     attachControlIfAudioConnected(detectedDevice)
-
-                } else if (intent?.action == AirPodsNotifications.AIRPODS_DISCONNECTED) {
-                    synchronized(BluetoothConnectionManager) {
-                        if (BluetoothConnectionManager.aacpSocket?.isConnected == true) {
-                            Log.d(TAG, "Ignoring a stale disconnect broadcast after reconnection")
-                            return
-                        }
-                        device = null
-//                      isConnectedLocally = false
-                        popupShown = false
-                        updateNotificationContent(false)
-                        aacpManager.disconnected()
-                        BluetoothConnectionManager.aacpSocket = null
-                        BluetoothConnectionManager.attSocket = null
-                        clearA2dpConnectionReceiver()
-                    }
                 }
             }
         }
@@ -849,7 +833,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
         val deviceIntentFilter = IntentFilter().apply {
             addAction(AirPodsNotifications.AIRPODS_CONNECTION_DETECTED)
-            addAction(AirPodsNotifications.AIRPODS_DISCONNECTED)
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -3047,11 +3030,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     if (notifyDisconnect && !serviceResources.isClosed) {
                         // Check ownership and clear shared state atomically with publication.
                         // A late old reader must never clear a replacement connection's state.
-                        aacpManager.disconnected()
-                        updateNotificationContent(false)
-                        sendBroadcast(Intent(AirPodsNotifications.AIRPODS_DISCONNECTED).apply {
-                            setPackage(packageName)
-                        })
+                        finishControlDisconnection()
                     }
                 }
                 if (pendingAttSocket.get() != null && BluetoothConnectionManager.attSocket === pendingAttSocket.get()) {
@@ -3259,6 +3238,20 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         }
     }
 
+    /** Called by the retiring connection while holding the publication lock. */
+    private fun finishControlDisconnection() {
+        device = null
+        aacpManager.disconnected()
+        updateNotificationContent(false)
+        val retiredSession = aacpManager.captureDeviceSession()
+        serviceScope.launch(Dispatchers.Main.immediate) {
+            if (aacpManager.isCurrentDeviceSession(retiredSession) &&
+                BluetoothConnectionManager.aacpSocket?.isConnected != true) popupShown = false
+        }
+        // Observers need this notice; service state was already retired synchronously.
+        sendBroadcast(Intent(AirPodsNotifications.AIRPODS_DISCONNECTED).setPackage(packageName))
+    }
+
     fun disconnectForCD() {
         revokeAudioRestore(ownershipLost = true)
         BluetoothConnectionManager.aacpSocket?.close()
@@ -3294,11 +3287,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             // A new publication after this lock is released must survive cleanup.
             BluetoothConnectionManager.aacpSocket = null
             BluetoothConnectionManager.attSocket = null
-            aacpManager.disconnected()
-            updateNotificationContent(false)
-            sendBroadcast(Intent(AirPodsNotifications.AIRPODS_DISCONNECTED).apply {
-                setPackage(packageName)
-            })
+            finishControlDisconnection()
             aacp to att
         }
         retiredSockets.second?.let { attManager.detachReader(it) }
@@ -3353,9 +3342,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             val att = BluetoothConnectionManager.attSocket
             BluetoothConnectionManager.aacpSocket = null
             BluetoothConnectionManager.attSocket = null
-            aacpManager.disconnected()
-            updateNotificationContent(false)
-            sendBroadcast(Intent(AirPodsNotifications.AIRPODS_DISCONNECTED).setPackage(packageName))
+            finishControlDisconnection()
             control to att
         }
         // Both sockets still belong to their tracked connection scope if cancellation
