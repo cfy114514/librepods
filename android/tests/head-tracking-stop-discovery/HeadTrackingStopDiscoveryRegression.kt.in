@@ -4,8 +4,12 @@ import android.util.Log
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicLong
 import kotlin.coroutines.CoroutineContext
+import kotlinx.coroutines.CancellableContinuation
 import kotlinx.coroutines.CoroutineDispatcher
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Delay
+import kotlinx.coroutines.InternalCoroutinesApi
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
@@ -29,9 +33,20 @@ private class Preferences {
     fun getString(key: String, default: String) = peer
     fun getBoolean(key: String, default: Boolean) = preferred
 }
-private class ManualDispatcher : CoroutineDispatcher() {
+@OptIn(InternalCoroutinesApi::class)
+private class ManualDispatcher : CoroutineDispatcher(), Delay {
     private val pending = ArrayDeque<Runnable>()
+    private val delayed = ArrayDeque<CancellableContinuation<Unit>>()
     override fun dispatch(context: CoroutineContext, block: Runnable) { pending.addLast(block) }
+    override fun scheduleResumeAfterDelay(timeMillis: Long, continuation: CancellableContinuation<Unit>) {
+        delayed.addLast(continuation)
+    }
+    fun resumeDelays() {
+        while (delayed.isNotEmpty()) {
+            val continuation = delayed.removeFirst()
+            if (continuation.isActive) continuation.resumeWith(Result.success(Unit))
+        }
+    }
     fun drain() { while (pending.isNotEmpty()) pending.removeFirst().run() }
 }
 
@@ -44,7 +59,18 @@ private class ObservedQueue<V : Any>(dispatcher: CoroutineDispatcher, consume: (
     private val delegate = KeyedWorkSession<Unit, V>(setOf(Unit), dispatcher,
         onError = { errors.add(it) }) { value -> consumed.add(value); consume(value) }
     val isClosed get() = delegate.isClosed
-    fun offer(key: Unit, value: V): Boolean = delegate.offer(key, value).also { if (it) offered.add(value) }
+    var beforeOffer: ((V) -> Unit)? = null
+    private fun beforeAdmission(value: V) {
+        beforeOffer?.also { beforeOffer = null }?.invoke(value)
+    }
+    fun offer(key: Unit, value: V): Boolean {
+        beforeAdmission(value)
+        return delegate.offer(key, value).also { if (it) offered.add(value) }
+    }
+    fun offerIf(key: Unit, value: V, accept: () -> Boolean): Boolean {
+        beforeAdmission(value)
+        return delegate.offerIf(key, value, accept).also { if (it) offered.add(value) }
+    }
     fun assertHealthy() { check(errors.isEmpty()) { "Command worker failed: ${errors.joinToString()}" } }
     override fun close() = delegate.close()
 }
@@ -60,10 +86,12 @@ private class Fixture : Closeable {
     val headTrackingStartup = HeadTrackingStartup<HeadTrackingRequest>()
     val headTrackingStatus = headTrackingStartup.status
     val dispatcher = ManualDispatcher()
-    // Startup timeout jobs remain queued; this harness controls command/discovery ordering,
-    // not elapsed time or the fallback timer. They are cancelled during fixture cleanup.
+    // Startup delays resume only when a test requests it; no wall-clock timer is used.
+    // Outstanding jobs are cancelled during fixture cleanup.
     private val startupDispatcher = ManualDispatcher()
-    private val serviceScope = CoroutineScope(SupervisorJob() + startupDispatcher)
+    private val startupErrors = mutableListOf<Throwable>()
+    private val serviceScope = CoroutineScope(SupervisorJob() + startupDispatcher +
+        CoroutineExceptionHandler { _, error -> startupErrors.add(error) })
     private var headTrackingStartupJob: Job? = null
     private val headTrackingBindingLock = Any()
     var appliedHeadTrackingRequest: HeadTrackingRequest? = null
@@ -101,6 +129,11 @@ private class Fixture : Closeable {
         return headTrackingCommands.offered.last().also { check(!it.ticket.enabled) }
     }
     fun discover(service: Int) { aacpManager.receivePacket(descriptor(service)) }
+    fun runStartupTimeout() {
+        startupDispatcher.drain()
+        startupDispatcher.resumeDelays()
+        startupDispatcher.drain()
+    }
     override fun close() {
         headTrackingCommands.close()
         serviceScope.cancel()
@@ -109,6 +142,7 @@ private class Fixture : Closeable {
         headTrackingSession.close()
         HeadTracking.reset()
         headTrackingCommands.assertHealthy()
+        check(startupErrors.isEmpty()) { "Startup worker failed: ${startupErrors.joinToString()}" }
     }
 }
 
@@ -249,6 +283,79 @@ fun main() {
             state.dispatcher.drain()
             check(state.writes.size == 2)
             check(state.writes.last().contentEquals(discoveredPacket(16, true)))
+        }
+    }
+    for (oldEnabled in listOf(false, true)) {
+        test("older ${if (oldEnabled) "START" else "STOP"} cannot replace the newer opposite request at admission") {
+            Fixture().use { state ->
+                state.discover(15)
+                state.start()
+                if (oldEnabled) state.headTrackingSession.request(false, state.sharedPreferences.peer)
+                val oldTicket = state.headTrackingSession.request(oldEnabled, state.sharedPreferences.peer)!!
+                val offeredBefore = state.headTrackingCommands.offered.size
+                var older: Fixture.HeadTrackingRequest? = null
+                var newer: Fixture.HeadTrackingRequest? = null
+                // Insert the competing producer after the old request was prepared,
+                // just before it calls the real queue. The hook is cleared before its
+                // callback runs, so the nested enqueue reaches the queue normally.
+                state.headTrackingCommands.beforeOffer = { request ->
+                    older = request
+                    check(request.ticket == oldTicket)
+                    check(state.headTrackingRequestCurrent(request))
+                    val latest = state.headTrackingSession.request(!oldEnabled, state.sharedPreferences.peer)!!
+                    state.enqueueHeadTrackingCommand(latest)
+                    newer = state.headTrackingCommands.offered.last()
+                    check(newer!!.ticket == latest && latest.id > oldTicket.id)
+                    check(state.headTrackingCommands.offered.size == offeredBefore + 1) {
+                        "The competing request did not actually enter the production queue"
+                    }
+                }
+                state.enqueueHeadTrackingCommand(oldTicket)
+                val oldRequest = checkNotNull(older)
+                val latestRequest = checkNotNull(newer)
+                state.dispatcher.drain()
+                check(!state.headTrackingRequestCurrent(oldRequest))
+                check(state.headTrackingRequestCurrent(latestRequest))
+                check(state.writes.size == 2) { "The old producer evicted the newer command before it could write" }
+                check(state.writes.last().contentEquals(discoveredPacket(15, !oldEnabled)))
+                check(state.appliedHeadTrackingRequest === latestRequest)
+                check(state.headTrackingCommands.offered.drop(offeredBefore) == listOf(latestRequest)) {
+                    "Rejected queue admission was recorded as an accepted offer"
+                }
+                check(state.headTrackingCommands.consumed.none { it === oldRequest })
+            }
+        }
+    }
+    test("descriptor at timeout retry admission preserves the discovered START") {
+        Fixture().use { state ->
+            state.start()
+            val original = state.appliedHeadTrackingRequest!!
+            check(original.motionService == null)
+            val offeredBefore = state.headTrackingCommands.offered.size
+            var retry: Fixture.HeadTrackingRequest? = null
+            var discoveredStart: Fixture.HeadTrackingRequest? = null
+            state.headTrackingCommands.beforeOffer = { request ->
+                retry = request
+                check(request.retryOf == original.attempt)
+                check(state.headTrackingRequestCurrent(request))
+                state.discover(15)
+                discoveredStart = state.headTrackingCommands.offered.last()
+                check(discoveredStart!!.motionService == 15 && discoveredStart!!.retryOf == null)
+                check(discoveredStart!!.ticket == original.ticket)
+                check(state.headTrackingCommands.offered.size == offeredBefore + 1) {
+                    "Discovery did not enqueue its actual replacement START"
+                }
+            }
+            state.runStartupTimeout()
+            val oldRetry = checkNotNull(retry)
+            val replacement = checkNotNull(discoveredStart)
+            state.dispatcher.drain()
+            check(!state.headTrackingRequestCurrent(oldRetry))
+            check(state.writes.size == 2) { "The stale timeout retry evicted the discovered START" }
+            check(state.writes.last().contentEquals(discoveredPacket(15, true)))
+            check(state.appliedHeadTrackingRequest === replacement)
+            check(state.headTrackingCommands.offered.drop(offeredBefore) == listOf(replacement))
+            check(state.headTrackingCommands.consumed.none { it === oldRetry })
         }
     }
     test("preview release preserves gesture until its final release") {

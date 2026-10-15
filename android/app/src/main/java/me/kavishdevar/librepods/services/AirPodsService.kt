@@ -3791,7 +3791,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         }?.alternate ?: preferred
         val request = HeadTrackingRequest(ticket, socket, aacpManager.captureDeviceSession(),
             headTrackingAttempts.incrementAndGet(), preferred, alternate, motionService = aacpManager.headTrackingService)
-        if (headTrackingRequestCurrent(request)) headTrackingCommands.offer(Unit, request)
+        headTrackingCommands.offerIf(Unit, request) { headTrackingRequestCurrent(request) }
     }
 
     private fun headTrackingRequestCurrent(request: HeadTrackingRequest): Boolean =
@@ -3845,7 +3845,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                             Log.i(TAG, "No head tracking samples; trying the other start packet")
                             val retry = request.copy(attempt = headTrackingAttempts.incrementAndGet(),
                                 alternate = !request.alternate, retryOf = request.attempt)
-                            headTrackingCommands.offer(Unit, retry)
+                            headTrackingCommands.offerIf(Unit, retry) { headTrackingRequestCurrent(retry) }
                         } else if (headTrackingStatus.value == HeadTrackingStatus.UNAVAILABLE) {
                             Log.w(TAG, "Neither head tracking start packet produced sensor samples")
                         }
