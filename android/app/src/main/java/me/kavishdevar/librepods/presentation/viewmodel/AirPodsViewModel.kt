@@ -36,6 +36,9 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.edit
+import androidx.lifecycle.DefaultLifecycleObserver
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
@@ -250,6 +253,8 @@ class AirPodsViewModel(
     private var attObserver: Closeable? = null
     private var headPreviewToken: Any? = null
     private var headPreviewRequested = false
+    private var headPreviewStarted = false
+    private var headPreviewLifecycle: Closeable? = null
     private var headPreviewLease: Closeable? = null
     private var headPreviewStatusJob: Job? = null
     private var headPreviewStatusToken: Any? = null
@@ -375,6 +380,9 @@ class AirPodsViewModel(
         synchronized(this) {
             headPreviewToken = null
             headPreviewRequested = false
+            headPreviewStarted = false
+            headPreviewLifecycle?.close()
+            headPreviewLifecycle = null
             headPreviewLease?.close()
             headPreviewLease = null
             headPreviewStatusToken = null
@@ -848,20 +856,46 @@ class AirPodsViewModel(
     }
 
     @Synchronized
-    fun beginHeadTrackingPreview(): Closeable {
+    fun beginHeadTrackingPreview(lifecycle: Lifecycle): Closeable {
         val token = Any()
         headPreviewToken = token
         headPreviewRequested = true
-        renewHeadPreviewLease()
-        return Closeable {
+        headPreviewStarted = lifecycle.currentState.isAtLeast(Lifecycle.State.STARTED)
+        headPreviewLifecycle?.close()
+
+        fun setStarted(started: Boolean) {
             synchronized(this) {
-                if (headPreviewToken === token) {
-                    headPreviewToken = null
-                    headPreviewRequested = false
+                if (headPreviewToken === token && headPreviewStarted != started) {
+                    // Keep the user's play/pause choice while the page is in the background.
+                    headPreviewStarted = started
                     renewHeadPreviewLease()
                 }
             }
         }
+
+        lateinit var preview: Closeable
+        val observer = object : DefaultLifecycleObserver {
+            override fun onStart(owner: LifecycleOwner) = setStarted(true)
+            override fun onStop(owner: LifecycleOwner) = setStarted(false)
+            override fun onDestroy(owner: LifecycleOwner) = preview.close()
+        }
+        preview = Closeable {
+            synchronized(this) {
+                lifecycle.removeObserver(observer)
+                if (headPreviewToken === token) {
+                    headPreviewToken = null
+                    headPreviewRequested = false
+                    headPreviewStarted = false
+                    headPreviewLifecycle = null
+                    renewHeadPreviewLease()
+                }
+            }
+        }
+        headPreviewLifecycle = preview
+        lifecycle.addObserver(observer)
+        if (lifecycle.currentState == Lifecycle.State.DESTROYED) preview.close()
+        else renewHeadPreviewLease()
+        return preview
     }
 
     @Synchronized
@@ -879,25 +913,26 @@ class AirPodsViewModel(
 
     @Synchronized
     private fun renewHeadPreviewLease() {
+        val previewActive = headPreviewRequested && headPreviewStarted
         val previous = headPreviewLease
         // Acquire the replacement before closing the old handle. A stale close must not
         // interrupt a replacement preview or another consumer's calibration.
-        headPreviewLease = if (headPreviewRequested && ::service.isInitialized && !isDemoMode)
+        headPreviewLease = if (previewActive && ::service.isInitialized && !isDemoMode)
             service.acquireHeadTracking(me.kavishdevar.librepods.services.HeadTrackingSession.Consumer.PREVIEW) else null
         previous?.close()
         val peer = if (::sharedPreferences.isInitialized) me.kavishdevar.librepods.data.batteryHistoryIdentity(
             sharedPreferences.getString("mac_address", "") ?: "") else null
-        val owner = if (::service.isInitialized && !isDemoMode && headPreviewRequested) service else null
+        val owner = if (::service.isInitialized && !isDemoMode && previewActive) service else null
         headPreviewStatusJob?.cancel()
         val statusToken = Any()
         headPreviewStatusToken = statusToken
-        _uiState.update { it.copy(headTrackingActive = headPreviewRequested, headTrackingPeer = peer,
+        _uiState.update { it.copy(headTrackingActive = previewActive, headTrackingPeer = peer,
             headTrackingStatus = owner?.headTrackingStatus?.value ?: HeadTrackingStatus.INACTIVE) }
         headPreviewStatusJob = owner?.let {
             viewModelScope.launch {
                 it.headTrackingStatus.collect { status ->
                     synchronized(this@AirPodsViewModel) {
-                        if (headPreviewStatusToken === statusToken && service === owner && headPreviewRequested)
+                        if (headPreviewStatusToken === statusToken && service === owner && headPreviewRequested && headPreviewStarted)
                             _uiState.update { state -> state.copy(headTrackingStatus = status) }
                     }
                 }
