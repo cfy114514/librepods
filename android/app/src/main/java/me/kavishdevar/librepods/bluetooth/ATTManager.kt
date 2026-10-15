@@ -94,12 +94,11 @@ class ATTManagerv2 {
                 } catch (t: Throwable) {
                     Log.e(TAG, "reader thread crashed: ${t.message}", t)
                 } finally {
-                    synchronized(readerLock) {
-                        if (activeReader === session) activeReader = null
-                        // EOF and read failures release requests too. An old reader
-                        // only clears its own mailbox when a new session has started.
-                        session.responses.clear()
-                    }
+                    // EOF and read failures must close the transport too. Clearing
+                    // activeReader first would prevent retirement from finding it.
+                    retire(session)
+                    // A replaced/detached reader may only clear its own mailbox.
+                    session.responses.clear()
                     Log.d(TAG, "reader thread stopped")
                 }
             }.also { it.name = "ATT-Reader"; it.isDaemon = true; it.start() }

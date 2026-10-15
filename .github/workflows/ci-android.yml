@@ -117,7 +117,7 @@ jobs:
           ./gradlew --no-daemon --stacktrace assembleFossRelease \
             2>&1 | tee build/ci-release.log
 
-      - name: Run JVM unit tests
+      - name: Run JVM and ATT lifecycle tests
         id: tests
         if: ${{ !cancelled() && steps.apk.outcome == 'success' }}
         working-directory: android
@@ -126,6 +126,8 @@ jobs:
           set -euo pipefail
           ./gradlew --no-daemon --stacktrace testFossDebugUnitTest \
             2>&1 | tee build/ci-tests.log
+          python3 tests/att-reader-lifecycle/run.py \
+            2>&1 | tee build/ci-att-reader.log
 
       - name: Run Android Lint
         id: lint
@@ -202,7 +204,7 @@ jobs:
             echo "APK build: ${APK_OUTCOME}"
             echo "Release signing setup: ${SIGNING_OUTCOME}"
             echo "Signed Release APK: ${RELEASE_OUTCOME}"
-            echo "JVM unit tests: ${TEST_OUTCOME}"
+            echo "JVM and ATT lifecycle tests: ${TEST_OUTCOME}"
             echo "Android Lint: ${LINT_OUTCOME}"
             echo "Checked-out commit: $(git rev-parse HEAD)"
             echo 'All three verification steps are required; no errors are ignored.'
