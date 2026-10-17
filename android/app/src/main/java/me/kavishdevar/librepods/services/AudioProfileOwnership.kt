@@ -47,10 +47,21 @@ internal class AudioProfileOwnership(profiles: Set<Int>) {
 
     @Synchronized fun beginExplicitConnectIfCurrent(
         selection: SelectionTicket, valid: () -> Boolean = { true }
+    ): Ticket? = beginExplicitConnectIfCurrent(selection, valid, userInitiated = true)
+
+    @Synchronized fun beginExplicitConnectIfCurrent(
+        selection: SelectionTicket, valid: () -> Boolean = { true }, userInitiated: Boolean
     ): Ticket? {
-        if (!matches(selection.address) || epoch != selection.epoch || !valid()) return null
+        if (!matches(selection.address) || epoch != selection.epoch || !valid() ||
+            (!userInitiated && hasActiveUserConnect())) return null
         // A late task must never select its old peer again.
-        return beginExplicitConnect(selection.address)
+        return beginExplicitConnect(selection.address, userInitiated)
+    }
+
+    /** Admit user work atomically, so a passive claim cannot interrupt selection capture. */
+    @Synchronized fun beginExplicitConnectIfSelected(peer: String, valid: () -> Boolean = { true }): Ticket? {
+        if (!matches(peer) || !valid()) return null
+        return beginExplicitConnect(peer)
     }
 
     private fun publishMediaState() { mediaState = MediaState(address, epoch, ownershipLost) }
@@ -58,6 +69,14 @@ internal class AudioProfileOwnership(profiles: Set<Int>) {
     private val released = mutableSetOf<Int>()
     private val claimed = mutableSetOf<Int>()
     private val pendingReleases = mutableMapOf<Int, Ticket>()
+    private class ExplicitConnect(
+        val ticket: Ticket, val userInitiated: Boolean, val pendingProfiles: MutableSet<Int>
+    )
+    private var activeExplicit: ExplicitConnect? = null
+
+    private fun hasActiveUserConnect(): Boolean = activeExplicit?.let {
+        it.userInitiated && isCurrent(it.ticket)
+    } == true
 
     @Synchronized fun select(peer: String?) {
         if (address.equals(peer, ignoreCase = true)) return
@@ -73,19 +92,23 @@ internal class AudioProfileOwnership(profiles: Set<Int>) {
         claimed.clear()
         ownershipLost = lost
         latestOperation = null
+        activeExplicit = null
         publishMediaState()
     }
 
-    @Synchronized fun claim(peer: String) {
+    @Synchronized fun claim(peer: String): Boolean {
+        if (matches(peer) && hasActiveUserConnect()) return false
         select(peer)
         revoke()
         claimed.addAll(profiles)
+        return true
     }
 
     @Synchronized fun socketClosed() {
         epoch++
         claimed.clear()
         latestOperation = null
+        activeExplicit = null
         // A policy set to FORBIDDEN outlives the control socket. Keep accepted releases.
         publishMediaState()
     }
@@ -95,6 +118,7 @@ internal class AudioProfileOwnership(profiles: Set<Int>) {
         epoch++
         claimed.clear()
         latestOperation = null
+        activeExplicit = null
         publishMediaState()
     }
 
@@ -109,6 +133,7 @@ internal class AudioProfileOwnership(profiles: Set<Int>) {
         if (latestOperation != Operation.RESTORE) return
         epoch++
         latestOperation = null
+        activeExplicit = null
         publishMediaState()
     }
 
@@ -117,6 +142,7 @@ internal class AudioProfileOwnership(profiles: Set<Int>) {
         if (ownershipLost) {
             epoch++
             ownershipLost = false
+            activeExplicit = null
             publishMediaState()
         }
         released.remove(profile)
@@ -135,15 +161,17 @@ internal class AudioProfileOwnership(profiles: Set<Int>) {
         if (!matches(peer) || (restorable && ownershipLost)) return null
         epoch++
         latestOperation = Operation.RELEASE
+        activeExplicit = null
         publishMediaState()
         return Ticket(peer, epoch, Operation.RELEASE, profiles, restorable = restorable, grantEpoch = grantEpoch)
     }
 
     @Synchronized fun beginRestore(peer: String): Ticket? {
-        if (!matches(peer) || ownershipLost || latestOperation == Operation.EXPLICIT_CONNECT) return null
+        if (!matches(peer) || ownershipLost || activeExplicit?.let { isCurrent(it.ticket) } == true) return null
         // Invalidate a pending release even when it has not yet granted a restore.
         epoch++
         latestOperation = Operation.RESTORE
+        activeExplicit = null
         publishMediaState()
         // A policy call already in flight may forbid this profile after the wearer returns.
         // Its queued restore will run only if that call actually grants a release.
@@ -153,15 +181,43 @@ internal class AudioProfileOwnership(profiles: Set<Int>) {
         return Ticket(peer, epoch, Operation.RESTORE, requested, (released + pending).toSet(), grantEpoch = grantEpoch)
     }
 
-    @Synchronized fun beginExplicitConnect(peer: String): Ticket {
+    @Synchronized fun beginExplicitConnect(peer: String): Ticket = beginExplicitConnect(peer, userInitiated = true)
+
+    private fun beginExplicitConnect(peer: String, userInitiated: Boolean): Ticket {
         select(peer)
         revoke()
         latestOperation = Operation.EXPLICIT_CONNECT
-        return Ticket(peer, epoch, Operation.EXPLICIT_CONNECT, profiles, grantEpoch = grantEpoch)
+        return Ticket(peer, epoch, Operation.EXPLICIT_CONNECT, profiles, grantEpoch = grantEpoch).also {
+            // Reserve every profile before dispatch; a fast first callback cannot expose
+            // the remaining profile to a passive claim before it has been enqueued.
+            activeExplicit = ExplicitConnect(it, userInitiated, profiles.toMutableSet())
+        }
+    }
+
+    /** Every dispatched, skipped, rejected or replaced profile must finish exactly once. */
+    @Synchronized fun completeExplicitProfile(ticket: Ticket, profile: Int) {
+        val active = activeExplicit ?: return
+        if (active.ticket !== ticket || !isCurrent(ticket) || !active.pendingProfiles.remove(profile)) return
+        if (active.pendingProfiles.isEmpty()) retireExplicitConnect()
+    }
+
+    /** Cancel an abandoned or timed-out producer without invalidating newer work. */
+    @Synchronized fun abandonExplicitConnect(ticket: Ticket) {
+        if (activeExplicit?.ticket !== ticket || !isCurrent(ticket)) return
+        retireExplicitConnect()
+    }
+
+    private fun retireExplicitConnect() {
+        activeExplicit = null
+        latestOperation = null
+        // Media already requested by the completed action keeps its ownership epoch.
+        // Only this explicit ticket becomes invalid; selection and accepted grants survive.
     }
 
     @Synchronized fun isCurrent(ticket: Ticket): Boolean =
-        matches(ticket.address) && ticket.epoch == epoch
+        matches(ticket.address) && ticket.epoch == epoch &&
+            (ticket.operation != Operation.EXPLICIT_CONNECT ||
+                activeExplicit?.let { it.ticket === ticket && it.pendingProfiles.isNotEmpty() } == true)
 
     /** Order Binder actions; recheck state at entry and after the uninterruptible action. */
     fun withCurrent(
@@ -174,6 +230,7 @@ internal class AudioProfileOwnership(profiles: Set<Int>) {
 
     @Synchronized private fun eligible(ticket: Ticket, profile: Int): Boolean =
         isCurrent(ticket) && profile in ticket.profiles &&
+            (ticket.operation != Operation.EXPLICIT_CONNECT || activeExplicit?.pendingProfiles?.contains(profile) == true) &&
             (ticket.operation != Operation.RESTORE || profile in released || profile in claimed)
 
     /** Register only a policy write about to enter Binder, not a pending profile lookup. */

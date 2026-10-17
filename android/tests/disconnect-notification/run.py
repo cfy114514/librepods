@@ -47,6 +47,11 @@ def main():
     source = args.android_root.resolve() / "app/src/main/java/me/kavishdevar/librepods"
     service_path = args.service_source or source / "services/AirPodsService.kt"
     service = service_path.read_text()
+    request_prefixes = ("    private class AudioProfileRequest(", "    private data class AudioProfileRequest(")
+    if sum(service.count(prefix) for prefix in request_prefixes) != 1:
+        raise ValueError("Expected exactly one AudioProfileRequest declaration")
+    request_prefix = next(prefix for prefix in request_prefixes if prefix in service)
+    request = between(service, request_prefix, "    private val profileOwnerToken = Any()")
     receiver = between(service, "        connectionReceiver = object : BroadcastReceiver() {", "        showIslandReceiver = object : BroadcastReceiver() {")
     intent_filter = between(service, "        val deviceIntentFilter = IntentFilter().apply {", "        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {\n            registerReceiver(connectionReceiver")
     registration = between(service, "        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {\n            registerReceiver(connectionReceiver", "        // Query connected profiles; discovery alone must not attach control or claim audio.")
@@ -60,7 +65,7 @@ def main():
     if "    private fun finishControlDisconnection()" in service:
         finish = between(service, "    private fun finishControlDisconnection()", "    fun disconnectForCD()")
     replacements = dict(RECEIVER=receiver, FILTER=intent_filter, REGISTRATION=registration, SENDER=sender, WATCH=stale_watch,
-                        POPUP=popup, DISPATCH=dispatch, REVOKE=revoke, FINISH=finish)
+                        POPUP=popup, DISPATCH=dispatch, REVOKE=revoke, FINISH=finish, REQUEST=request)
     sources = [source / "services/AudioProfileOwnership.kt", source / "services/PendingProfileRequests.kt"]
     for path in (service_path, *sources):
         print(f"SOURCE {path} sha256={hashlib.sha256(path.read_bytes()).hexdigest()}", flush=True)

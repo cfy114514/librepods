@@ -57,6 +57,8 @@ def main():
     parser.add_argument("--android-root", type=Path, default=here.parents[1])
     parser.add_argument("--service-source", type=Path, help="Immutable service snapshot for regression proof")
     parser.add_argument("--ownership-source", type=Path, help="Matching ownership snapshot, when replaying an old service")
+    parser.add_argument("--queue-source", type=Path, help="Matching profile queue snapshot, when replaying an old service")
+    parser.add_argument("--deadline-source", type=Path, help="Matching deadline snapshot, when replaying a service with explicit deadlines")
     parser.add_argument("--compiler-lib", type=Path)
     parser.add_argument("--save-generated", type=Path)
     args = parser.parse_args()
@@ -71,26 +73,36 @@ def main():
     java = shutil.which("java")
     if not java: parser.error("java is required")
     libraries = []
-    for pattern in ("kotlin-stdlib-*.jar", "annotations-*.jar"):
+    for pattern in ("kotlin-stdlib-*.jar", "annotations-*.jar", "kotlinx-coroutines-core*.jar"):
         matches = sorted(compiler_lib.glob(pattern))
         if not matches: parser.error(f"Missing {pattern} in {compiler_lib}")
         libraries.extend(matches)
     source = args.android_root.resolve() / "app/src/main/java/me/kavishdevar/librepods/services"
     service_path = args.service_source or source / "AirPodsService.kt"
     ownership_path = args.ownership_source or source / "AudioProfileOwnership.kt"
-    sources = [ownership_path, source / "PendingProfileRequests.kt",
+    sources = [ownership_path, args.queue_source or source / "PendingProfileRequests.kt",
                source / "ConnectionAttempts.kt", source / "CloseableResourceScope.kt"]
     service = service_path.read_text()
+    deadline_marker = "    private val audioConnectDeadline = serviceResources.track(AudioConnectDeadline(audioProfileOwnership, serviceScope))"
+    if "private val audioConnectDeadline" in service:
+        if service.count(deadline_marker) != 1: raise ValueError("Audio deadline initializer changed")
+        sources.append(args.deadline_source or source / "AudioConnectDeadline.kt")
     replacements = {
+        "DEADLINE_FIELD": deadline_marker if "private val audioConnectDeadline" in service else "",
+        "PROFILE_TYPE": between(service, "    private enum class AudioProfileAction", "    private val profileOwnerToken = Any()"),
+        "PROFILE_QUEUE": between(service, "    private val profileRequests = serviceResources.track(", "    private val batteryWidgetUpdates ="),
         "LISTENER": function(service, "    private val bleStatusListener = object : BLEManager.AirPodsStatusListener {"),
         "NOTIFICATION": function(service, "    fun updateNotificationContent("),
         "TAKEOVER_TYPE": between(service, "    private enum class TakeoverAction", "    private val takeoverGeneration = AtomicLong()"),
         "TAKEOVER": between(service, "    @RequiresApi(Build.VERSION_CODES.R)\n    fun takeOver(", "    @SuppressLint(\"MissingPermission\")\n    private fun performTakeover("),
         "CONNECT_TAKEOVER": function(service, "    private fun connectAudioForTakeover("),
+        "SAVED_RECONNECT": function(service, "    fun reconnectFromSavedMac()"),
         "CONNECT": between(service, "    fun connectAudio(context: Context, device: BluetoothDevice?)", "    fun setName(name: String)"),
         "PROFILE_OFFER": between(service, "    private fun withAudioProfile(", "    private fun acquireAudioProfile("),
         "PROFILE_DISPATCH": between(service, "                for (request in requests) {", "\n            }\n        } catch (_: java.util.concurrent.CancellationException)"),
+        "PROFILE_FINISH": function(service, "            onFinished = {").replace("onFinished =", "val onFinished =", 1),
         "AUDIO_VALID": between(service, "    @SuppressLint(\"MissingPermission\")\n    private fun audioOperationValid(", "    fun disconnectAudio("),
+        "DISCONNECT_AUDIO": function(service, "    fun disconnectAudio("),
         "REVOKE": function(service, "    private fun revokeAudioRestore("),
         "RETIRE": function(service, "    private fun finishControlDisconnection()"),
         "WATCH": between(service, "    private fun clearStaleA2dpConnectionReceiver()", "    private fun dispatchProfileCleanup("),
