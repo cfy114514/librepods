@@ -134,6 +134,8 @@ jobs:
             2>&1 | tee build/ci-disconnect-notification.log
           python3 tests/ble-presence-lifecycle/run.py \
             2>&1 | tee build/ci-ble-presence.log
+          python3 tests/ble-scan-ordering/run.py \
+            2>&1 | tee build/ci-ble-scan-ordering.log
 
       - name: Run Android Lint
         id: lint

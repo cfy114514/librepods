@@ -62,7 +62,7 @@ class BLEManager(private val context: Context) {
                 rightBattery == other.rightBattery && caseBattery == other.caseBattery &&
                 isLeftCharging == other.isLeftCharging && isRightCharging == other.isRightCharging &&
                 isCaseCharging == other.isCaseCharging
-        /** Reception time keeps the device alive, but is not a device state change. */
+        /** Observation time keeps the device alive, but is not a device state change. */
         internal fun hasSameStateAs(other: AirPodsStatus): Boolean =
             address == other.address &&
                 ownerAddress == other.ownerAddress &&
@@ -85,7 +85,7 @@ class BLEManager(private val context: Context) {
         if (mScanCallback == null) return null
         if (statusIrk != sharedPreferences.getString(AACPManager.Companion.ProximityKeyType.IRK.name, null)) return null
         val selected = sharedPreferences.getString("mac_address", "") ?: ""
-        return deviceStatusMap.values.maxByOrNull { it.lastSeen }?.takeIf {
+        return deviceStatusMap[mostRecentAddress ?: return null]?.takeIf {
             SystemClock.elapsedRealtime() - it.lastSeen <= STALE_DEVICE_TIMEOUT_MS &&
                 (it.ownerAddress == null || it.ownerAddress.equals(selected, ignoreCase = true))
         }
@@ -105,6 +105,7 @@ class BLEManager(private val context: Context) {
     @Volatile private var mScanCallback: ScanCallback? = null
     @Volatile private var airPodsStatusListener: AirPodsStatusListener? = null
     private val deviceStatusMap = ConcurrentHashMap<String, AirPodsStatus>()
+    @Volatile private var mostRecentAddress: String? = null
     @Volatile private var statusIrk: String? = null
     private val sharedPreferences: SharedPreferences = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
     private val rpaVerifier = CachedRpaVerifier(onInvalidKey = { Log.e(TAG, "Invalid IRK", it) })
@@ -112,6 +113,7 @@ class BLEManager(private val context: Context) {
         Log.e(TAG, "Unable to decrypt proximity data", it)
     })
     private val lidState = BleLidState()
+    private val observationOrder = BleObservationOrder(STALE_DEVICE_TIMEOUT_MS)
     private var lastBroadcastTime: Long = 0
     private val advertisementDeduplicator = BleAdvertisementDeduplicator()
 
@@ -262,13 +264,12 @@ class BLEManager(private val context: Context) {
             if (irkOwner != null && !irkOwner.equals(sharedPreferences.getString("mac_address", ""), ignoreCase = true)) return
             if (statusIrk != irkBase64) {
                 deviceStatusMap.clear()
+                mostRecentAddress = null
                 lidState.reset()
+                observationOrder.reset()
                 statusIrk = irkBase64
             }
             if (!rpaVerifier.verify(address, irkBase64)) return
-
-            advertisementDeduplicator.markProcessed(address)
-            lastBroadcastTime = SystemClock.elapsedRealtime()
 
             val storedEncryptionKey = sharedPreferences.getString(AACPManager.Companion.ProximityKeyType.ENC_KEY.name, null)
             val encryptionOwner = sharedPreferences.getString("ENC_KEY_owner", null)
@@ -279,11 +280,20 @@ class BLEManager(private val context: Context) {
                 parseProximityMessageWithDecryption(address, manufacturerData, decryptedData)
             } else {
                 parseProximityMessage(address, manufacturerData)
-            }).copy(ownerAddress = irkOwner)
+            }).copy(ownerAddress = irkOwner, lastSeen = result.timestampNanos / 1_000_000)
             if (irkBase64 != sharedPreferences.getString(AACPManager.Companion.ProximityKeyType.IRK.name, null)) return
+            // Batch ordering is only local, and the same AirPods can rotate addresses.
+            // Admit once across that identity before updating presence or any listener.
+            if (!observationOrder.accept(result.timestampNanos, SystemClock.elapsedRealtimeNanos())) return
+
+            advertisementDeduplicator.markProcessed(address)
+            // Retain the lid's existing grace period after an accepted delivery.
+            lastBroadcastTime = SystemClock.elapsedRealtime()
 
             val previousStatus = deviceStatusMap[address]
             deviceStatusMap[address] = parsedStatus
+            // Keep nanosecond admission order even when lastSeen milliseconds tie.
+            mostRecentAddress = address
 
             airPodsStatusListener?.let { listener ->
                 listener.onBatteryObserved(parsedStatus)
