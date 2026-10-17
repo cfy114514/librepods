@@ -138,6 +138,47 @@ class AudioProfileOwnershipTest {
         assertFalse(state.hasReleased(peer))
     }
 
+    @Test fun expiredBleClaimCannotRestoreUnreleasedProfiles() {
+        val state = policy()
+        state.claim(peer)
+        val restore = state.beginRestore(peer)!!
+        state.expireClaim()
+        assertFalse(state.withCurrent(restore, a2dp) { fail("Expired presence must not grant a connection") })
+        assertFalse(state.withCurrent(restore, headset) { fail("Expired presence must not grant a connection") })
+        assertNull(state.beginRestore(peer))
+    }
+
+    @Test fun expiredBleClaimPreservesAcceptedPolicyRelease() {
+        val state = policy()
+        state.claim(peer)
+        val release = state.beginRelease(peer, true)!!
+        state.recordReleased(release, a2dp, true)
+        val restore = state.beginRestore(peer)!!
+        state.expireClaim()
+        assertTrue(state.withCurrent(restore, a2dp) {})
+        assertFalse(state.withCurrent(restore, headset) { fail("Only the accepted release may restore") })
+        assertEquals(setOf(a2dp), state.beginRestore(peer)!!.profiles)
+    }
+
+    @Test fun expiredBleClaimPreservesManualSelectionBeforeAdmission() {
+        val state = policy()
+        state.claim(peer)
+        val selection = state.captureSelection(peer)!!
+        state.expireClaim()
+        val manual = state.beginExplicitConnectIfCurrent(selection)!!
+        assertTrue(state.withCurrent(manual, a2dp) {})
+    }
+
+    @Test fun expiredBlePresencePreservesExplicitRequestButRealDisconnectRevokesIt() {
+        val state = policy()
+        val manual = state.beginExplicitConnect(peer)
+        state.expireClaim()
+        assertTrue(state.withCurrent(manual, a2dp) {})
+        assertTrue(state.withCurrent(manual, headset) {})
+        state.socketClosed()
+        assertFalse(state.withCurrent(manual, a2dp) { fail("A real disconnect must revoke old work") })
+    }
+
     @Test fun failedRestoreAndInvalidSocketKeepReleaseForAValidRetry() {
         val state = policy()
         val release = state.beginRelease(peer, true)!!

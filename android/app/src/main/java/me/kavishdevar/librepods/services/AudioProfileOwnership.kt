@@ -98,6 +98,13 @@ internal class AudioProfileOwnership(profiles: Set<Int>) {
         publishMediaState()
     }
 
+    /** BLE silence expires passive grants, not a user's selection or explicit request. */
+    @Synchronized fun expireClaim() {
+        // Restore eligibility reads this set again at execution. BLE-triggered connection
+        // work has its own presence guard; accepted policy releases remain restorable.
+        claimed.clear()
+    }
+
     @Synchronized fun cancelPendingRestore() {
         if (latestOperation != Operation.RESTORE) return
         epoch++

@@ -389,11 +389,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private data class TakeoverRequest(
         val action: TakeoverAction, val reason: String, val peer: String, val generation: Long, val deviceSession: Long?,
         val socket: BluetoothSocket?, val selfMac: String?, val manual: Boolean, val headTracking: Boolean,
-        val headGeneration: Long? = null
+        val headGeneration: Long? = null, val bleGeneration: Long
     ) {
         val explicit: Boolean get() = action == TakeoverAction.REVERSE || manual || headTracking
     }
     private val takeoverGeneration = AtomicLong()
+    private val blePresenceGeneration = AtomicLong()
     private val takeoverRequests = serviceResources.track(KeyedWorkSession<TakeoverAction, TakeoverRequest>(
         TakeoverAction.entries.toSet(), Dispatchers.IO,
         onError = { Log.w(TAG, "Audio takeover failed", it) }, consume = ::performTakeover
@@ -477,6 +478,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             device: BLEManager.AirPodsStatus, previousStatus: BLEManager.AirPodsStatus?
         ) {
             val generation = takeoverGeneration.get()
+            val bleGeneration = blePresenceGeneration.get()
             if (!config.bleOnlyMode && config.takeoverWhenDisconnected &&
                 device.connectionState == "Disconnected" && BluetoothConnectionManager.aacpSocket?.isConnected != true) {
                 Log.d(TAG, "Seems no device has taken over, we will.")
@@ -485,14 +487,16 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 val savedAddress = sharedPreferences.getString("mac_address", "") ?: ""
                 if (BluetoothAdapter.checkBluetoothAddress(savedAddress)) {
                     val bluetoothDevice = bluetoothAdapter.getRemoteDevice(savedAddress)
-                    if (config.takeoverWhenDisconnected && !config.bleOnlyMode &&
-                        savedAddress.equals(macAddress, ignoreCase = true) && !serviceResources.isClosed) {
-                        audioProfileOwnership.claim(savedAddress)
-                        enqueueSocketConnection(bluetoothAdapter, bluetoothDevice, manual = false, canConnect = {
-                            generation == takeoverGeneration.get() && config.takeoverWhenDisconnected && !config.bleOnlyMode &&
-                                savedAddress.equals(macAddress, ignoreCase = true) && !serviceResources.isClosed
-                        })
+                    val canConnect = {
+                        generation == takeoverGeneration.get() && bleGeneration == blePresenceGeneration.get() &&
+                            config.takeoverWhenDisconnected && !config.bleOnlyMode &&
+                            savedAddress.equals(macAddress, ignoreCase = true) && !serviceResources.isClosed
                     }
+                    synchronized(BluetoothConnectionManager) {
+                        if (!canConnect() || BluetoothConnectionManager.aacpSocket?.isConnected == true) return
+                        audioProfileOwnership.claim(savedAddress)
+                    }
+                    enqueueSocketConnection(bluetoothAdapter, bluetoothDevice, manual = false, canConnect = canConnect)
                 }
             }
             Log.d(TAG, "Device status changed")
@@ -536,9 +540,18 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
         override fun onDeviceDisappeared() {
             Log.d(TAG, "All disappeared")
-            if (BluetoothConnectionManager.aacpSocket?.isConnected != true) {
-                updateNotificationContent(false)
-            }
+            expireBlePresence()
+        }
+    }
+
+    private fun expireBlePresence() {
+        // Serialize with socket publication: a live control link is independent of BLE.
+        synchronized(BluetoothConnectionManager) {
+            if (serviceResources.isClosed || ServiceManager.getService() !== this ||
+                BluetoothConnectionManager.aacpSocket?.isConnected == true) return
+            blePresenceGeneration.incrementAndGet()
+            audioProfileOwnership.expireClaim()
+            clearConnectionNotification()
         }
     }
 
@@ -2343,18 +2356,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         if (serviceResources.isClosed || ServiceManager.getService() !== this) return
         if (!connected) {
             headTrackingStartup.clear()
-            synchronized(this) {
-                notificationGeneration.incrementAndGet()
-                takeoverGeneration.incrementAndGet()
-                resetConversation()
-                audioChargingState.reset()
-                batteryNotification.invalidate()
-                audioProfileOwnership.socketClosed()
-                serviceScope.launch(Dispatchers.Main.immediate) { clearStaleA2dpConnectionReceiver() }
-                lastBatterySnapshot = null
-                if (::batteryHistory.isInitialized) { batteryHistory.flush(); updateBatteryWidget() }
-            }
-            notificationLease?.clear()
+            takeoverGeneration.incrementAndGet()
+            resetConversation()
+            audioChargingState.reset()
+            audioProfileOwnership.socketClosed()
+            serviceScope.launch(Dispatchers.Main.immediate) { clearStaleA2dpConnectionReceiver() }
+            clearConnectionNotification()
             return
         }
         val socket = BluetoothConnectionManager.aacpSocket ?: return
@@ -2368,6 +2375,15 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 isCurrentControlSocket(notice.socket) && notice.peer == me.kavishdevar.librepods.data.batteryHistoryIdentity(
                     sharedPreferences.getString("mac_address", "") ?: "")
         }
+    }
+
+    @Synchronized
+    private fun clearConnectionNotification() {
+        notificationGeneration.incrementAndGet()
+        batteryNotification.invalidate()
+        lastBatterySnapshot = null
+        if (::batteryHistory.isInitialized) { batteryHistory.flush(); updateBatteryWidget() }
+        notificationLease?.clear()
     }
 
     fun handleIncomingCall() {
@@ -2783,7 +2799,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             socket?.let { aacpManager.captureDeviceSession() }, socket,
             me.kavishdevar.librepods.data.batteryHistoryIdentity(localMac),
             manualTakeOverAfterReversed, startHeadTrackingAgain,
-            if (startHeadTrackingAgain) headTrackingSession.capture().id else null)
+            if (startHeadTrackingAgain) headTrackingSession.capture().id else null,
+            blePresenceGeneration.get())
         if (takeoverEnabled(request)) takeoverRequests.offer(action, request)
     }
 
@@ -2796,6 +2813,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private fun takeoverCurrent(request: TakeoverRequest, socket: BluetoothSocket? = request.socket): Boolean =
         !takeoverRequests.isClosed && !serviceResources.isClosed && ServiceManager.getService() === this &&
             request.generation == takeoverGeneration.get() && takeoverEnabled(request) &&
+            (request.explicit || request.socket != null || request.bleGeneration == blePresenceGeneration.get()) &&
             (request.headGeneration == null || headTrackingSession.currentStart(request.headGeneration) != null) &&
             (request.deviceSession == null || aacpManager.isCurrentDeviceSession(request.deviceSession)) &&
             request.peer == me.kavishdevar.librepods.data.batteryHistoryIdentity(
@@ -3074,6 +3092,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             // Publish AACP without waiting for the optional hearing-feature channel.
             connectionAttempts.whileCurrent(connection) {
                 synchronized(BluetoothConnectionManager) {
+                    // BLE can expire while this publisher is waiting for the socket lock.
+                    if (!connectionAttempts.isCurrent(connection)) throw CancellationException("Connection request expired")
                     attempt.ensureOpen()
                     if (!device.address.equals(sharedPreferences.getString("mac_address", ""), ignoreCase = true)) throw CancellationException("Selected AirPods changed")
                     batteryNotification.invalidate()

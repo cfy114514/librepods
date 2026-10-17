@@ -1,0 +1,349 @@
+package me.kavishdevar.librepods.services
+
+import java.util.concurrent.CancellationException
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
+
+private const val TAG = "BlePresenceRegression"
+private const val PEER = "AA:BB:CC:DD:EE:FF"
+private const val OTHER = "11:22:33:44:55:66"
+private const val MODE_PRIVATE = 0
+private annotation class SuppressLint(vararg val names: String)
+private annotation class RequiresApi(val api: Int)
+private object Build { object VERSION_CODES { const val R = 30 } }
+private object Log { fun d(tag: String, message: String) = Unit; fun w(tag: String, message: String, error: Exception) = Unit }
+class BluetoothDevice(val address: String)
+private class BluetoothSocket(val remoteDevice: BluetoothDevice, var isConnected: Boolean = true)
+class BluetoothProfile(val id: Int) {
+    var connections = 0
+    var policies = 0
+    var onPolicy: (() -> Unit)? = null
+    fun setConnectionPolicy(device: BluetoothDevice, policy: Int): Boolean { policies++; onPolicy?.invoke(); return true }
+    fun connect(device: BluetoothDevice): Boolean { connections++; return true }
+    fun getConnectionState(device: BluetoothDevice) = STATE_CONNECTED
+    companion object { const val A2DP = 2; const val HEADSET = 1; const val STATE_CONNECTED = 2 }
+}
+private class BluetoothAdapter {
+    fun getRemoteDevice(address: String) = BluetoothDevice(address)
+    companion object { fun checkBluetoothAddress(address: String) = address.count { it == ':' } == 5 }
+}
+private class BluetoothManager { val adapter = BluetoothAdapter() }
+private object BluetoothConnectionManager { var aacpSocket: BluetoothSocket? = null }
+private open class Context {
+    val applicationContext: Context get() = this
+    fun checkSelfPermission(permission: String) = PackageManager.PERMISSION_GRANTED
+    fun <T> getSystemService(type: Class<T>): T = type.cast(BluetoothManager())
+}
+private object PackageManager { const val PERMISSION_GRANTED = 0 }
+private object ServiceManager { var current: AirPodsService? = null; fun getService() = current }
+private object Dispatchers { object Main { val immediate = Any() } }
+private class MainQueue {
+    var beforeLaunch: (() -> Unit)? = null
+    fun launch(dispatcher: Any, action: () -> Unit) { beforeLaunch?.also { beforeLaunch = null }?.invoke(); action() }
+}
+private class ResourceState { var isClosed = false }
+private class Resettable { var resets = 0; fun clear() { resets++ }; fun reset() { resets++ } }
+private class HeadTrackingSession {
+    class Ticket(val id: Long)
+    fun capture() = Ticket(1)
+    fun currentStart(id: Long) = if (id == 1L) Ticket(id) else null
+}
+private class WorkQueue<K, V> { var isClosed = false; var last: V? = null; fun offer(key: K, value: V) { last = value } }
+private class AacpState {
+    private var session = 0L
+    fun disconnected() { session++ }
+    fun captureDeviceSession() = session
+    fun isCurrentDeviceSession(value: Long) = session == value
+}
+private class Preferences { var address = PEER; fun getString(key: String, fallback: String) = if (key == "mac_address") address else fallback }
+private class Configuration {
+    var bleOnlyMode = false
+    var takeoverWhenDisconnected = true
+    var takeoverWhenMediaStart = true
+    var takeoverWhenRingingCall = true
+    val deviceName = "AirPods"
+}
+private class Battery
+private class BatteryNotification {
+    var invalidations = 0
+    fun invalidate() { invalidations++ }
+    fun setBatteryDirect(left: Int, leftCharging: Boolean, right: Int, rightCharging: Boolean, case: Int, caseCharging: Boolean) = Unit
+}
+private class BatteryHistory { var flushes = 0; fun flush() { flushes++ } }
+private class BLEManager {
+    class AirPodsStatus(val connectionState: String = "Disconnected") {
+        val leftBattery: Int? = 80; val rightBattery: Int? = 80; val caseBattery: Int? = 60
+        val isLeftCharging = false; val isRightCharging = false; val isCaseCharging = false
+        fun hasSameBatteryAs(other: AirPodsStatus) = false
+    }
+    interface AirPodsStatusListener {
+        fun onBatteryObserved(device: AirPodsStatus)
+        fun onDeviceStatusChanged(device: AirPodsStatus, previousStatus: AirPodsStatus?)
+        fun onBroadcastFromNewAddress(device: AirPodsStatus)
+        fun onLidStateChanged(lidOpen: Boolean)
+        fun onEarStateChanged(device: AirPodsStatus, leftInEar: Boolean, rightInEar: Boolean)
+        fun onBatteryChanged(device: AirPodsStatus)
+        fun onDeviceDisappeared()
+    }
+}
+private class ConnectionNotice(val name: String, val batteries: List<Battery>, val reversed: Boolean,
+    val peer: String, val selection: Long, val deviceSession: Long, val socket: BluetoothSocket)
+private class NoticeLease {
+    var clears = 0
+    fun clear() { clears++ }
+    fun offer(notice: ConnectionNotice, valid: () -> Boolean) = Unit
+}
+private open class BroadcastReceiver
+private class Watch(val ticket: AudioProfileOwnership.Ticket, val receiver: BroadcastReceiver = BroadcastReceiver()) {
+    var closes = 0; fun close() { closes++ }
+}
+private object MediaController { var pausedWhileTakingOver = false; fun sendPlay() = Unit }
+private object AirPodsNotifications { const val AIRPODS_DISCONNECTED = "disconnected" }
+private class Intent(val action: String) { fun setPackage(name: String) = this }
+
+private class AirPodsService : Context() {
+    private enum class AudioProfileAction { DISCOVER, SDP, ATTACH, PAUSE, POLICY }
+    private data class AudioProfileRequest(val generation: Long, val action: (BluetoothProfile) -> Unit)
+@@TAKEOVER_TYPE@@
+    val serviceResources = ResourceState()
+    val serviceScope = MainQueue()
+    val config = Configuration()
+    val sharedPreferences = Preferences()
+    val audioProfileOwnership = AudioProfileOwnership(setOf(BluetoothProfile.A2DP, BluetoothProfile.HEADSET)).apply { select(PEER) }
+    val takeoverGeneration = AtomicLong()
+    val blePresenceGeneration = AtomicLong()
+    val manualConnectionGeneration = AtomicLong()
+    val notificationGeneration = AtomicLong()
+    val aacpManager = AacpState()
+    val batteryNotification = BatteryNotification()
+    val headTrackingStartup = Resettable()
+    val audioChargingState = Resettable()
+    val notificationLease = NoticeLease()
+    val headTrackingSession = HeadTrackingSession()
+    private val takeoverRequests = WorkQueue<TakeoverAction, TakeoverRequest>()
+    private val profileRequests = PendingProfileRequests<Int, AudioProfileAction, AudioProfileRequest>(
+        setOf(BluetoothProfile.A2DP, BluetoothProfile.HEADSET), AudioProfileAction.entries.toSet())
+    private val profileActionCurrent = ThreadLocal<() -> Boolean>()
+    private val a2dpWatch = AtomicReference<Watch?>()
+    private val pending = ArrayDeque<PendingProfileRequests.Ticket<Int>>()
+    val profiles = listOf(BluetoothProfile(BluetoothProfile.A2DP), BluetoothProfile(BluetoothProfile.HEADSET))
+    val autoSocketGuards = mutableListOf<() -> Boolean>()
+    var macAddress = PEER
+    var localMac = OTHER
+    var device: BluetoothDevice? = BluetoothDevice(PEER)
+    var popupShown = true
+    val packageName = "regression"
+    var disconnectedBecauseReversed = false
+    var lastBatterySnapshot: Any? = Any()
+    var lastBleBatteryStatus: BLEManager.AirPodsStatus? = null
+    lateinit var batteryHistory: BatteryHistory
+    var conversationResets = 0
+    var widgetUpdates = 0
+
+    init { batteryHistory = BatteryHistory(); ServiceManager.current = this }
+    private fun isCurrentControlSocket(socket: BluetoothSocket) = socket === BluetoothConnectionManager.aacpSocket && socket.isConnected
+    private fun resetConversation() { conversationResets++ }
+    private fun updateBatteryWidget() { widgetUpdates++ }
+    private fun recordBleBatteryHistory(status: BLEManager.AirPodsStatus) = Unit
+    private fun updateBattery(force: Boolean) = Unit
+    private fun showPopup(service: AirPodsService, name: String) = Unit
+    private fun getSharedPreferences(name: String, mode: Int) = sharedPreferences
+    private fun sendBroadcast(intent: Intent) = Unit
+    private fun enqueueSocketConnection(adapter: BluetoothAdapter, device: BluetoothDevice, manual: Boolean, canConnect: () -> Boolean) {
+        check(!manual); autoSocketGuards += canConnect
+    }
+    private fun registerA2dpConnectionReceiver(target: BluetoothDevice, ticket: AudioProfileOwnership.Ticket, socket: BluetoothSocket): BroadcastReceiver? = null
+    private fun acquireAudioProfile(context: Context, ticket: PendingProfileRequests.Ticket<Int>) { pending.addLast(ticket) }
+    private fun isCurrentProfileAction() = profileActionCurrent.get()?.invoke() != false
+
+@@LISTENER@@
+@@PRESENCE_HELPERS@@
+@@NOTIFICATION@@
+@@TAKEOVER@@
+@@CONNECT_TAKEOVER@@
+@@CONNECT@@
+@@PROFILE_OFFER@@
+@@AUDIO_VALID@@
+@@REVOKE@@
+@@RETIRE@@
+@@WATCH@@
+
+    fun expire() = bleStatusListener.onDeviceDisappeared()
+    fun observeDisconnected() = bleStatusListener.onDeviceStatusChanged(BLEManager.AirPodsStatus(), null)
+    fun retireControl() { BluetoothConnectionManager.aacpSocket = null; finishControlDisconnection() }
+    fun revoke() = revokeAudioRestore()
+    fun selectOther() { macAddress = OTHER; sharedPreferences.address = OTHER; audioProfileOwnership.select(OTHER) }
+    fun close() { serviceResources.isClosed = true; profileRequests.close() }
+    fun publishControl() { BluetoothConnectionManager.aacpSocket = BluetoothSocket(BluetoothDevice(PEER)) }
+    fun queueDirect() = connectAudio(this, BluetoothDevice(PEER))
+    fun captureTakeover(reason: String = "music", manual: Boolean = true, head: Boolean = false): () -> Boolean {
+        takeOver(reason, manual, head)
+        val request = takeoverRequests.last ?: error("Request was not offered")
+        return { takeoverCurrent(request) }
+    }
+    fun queueTakeover(sourceCurrent: () -> Boolean = { true }, beforeConnect: () -> Unit = {}): Boolean {
+        val request = takeoverRequests.last ?: error("No takeover captured")
+        return connectAudioForTakeover(request, BluetoothDevice(PEER), request.socket, sourceCurrent, beforeConnect) != null
+    }
+    fun dispatchProfiles() {
+        while (pending.isNotEmpty()) {
+            val ticket = pending.removeFirst()
+            val requests = profileRequests.take(ticket) ?: continue
+            val value = profiles.first { it.id == ticket.profile }
+@@PROFILE_DISPATCH@@
+            profileRequests.finished(ticket)?.let(pending::addLast)
+        }
+    }
+    fun connectionCount() = profiles.sumOf { it.connections }
+    fun policyCount() = profiles.sumOf { it.policies }
+    fun installWatch(ticket: AudioProfileOwnership.Ticket) = Watch(ticket).also(a2dpWatch::set)
+}
+
+fun main() {
+    var failures = 0
+    var total = 0
+    fun scenario(name: String, body: (AirPodsService) -> Unit) {
+        total++
+        BluetoothConnectionManager.aacpSocket = null
+        MediaController.pausedWhileTakingOver = false
+        try { body(AirPodsService()); println("PASS $name") }
+        catch (failure: Throwable) { failures++; println("FAIL $name: ${failure.message}") }
+    }
+    fun expectBoth(service: AirPodsService) {
+        service.dispatchProfiles()
+        check(service.connectionCount() == 2 && service.policyCount() == 2) {
+            "Expected two profile policy/connect actions, got ${service.policyCount()}/${service.connectionCount()}"
+        }
+    }
+
+    scenario("explicit selection begun after BLE expiry still connects") { service ->
+        service.expire(); service.captureTakeover(); check(service.queueTakeover()); expectBoth(service)
+    }
+    scenario("BLE expiry between selection snapshot and explicit ticket keeps request valid") { service ->
+        service.captureTakeover()
+        var expired = false
+        check(service.queueTakeover(sourceCurrent = {
+            if (!expired) { expired = true; service.expire() }
+            true
+        })) { "BLE expiry cancelled explicit selection" }
+        expectBoth(service)
+    }
+    scenario("BLE expiry after explicit ticket but before profile offer preserves ownership") { service ->
+        service.captureTakeover()
+        check(service.queueTakeover(beforeConnect = { service.expire() }))
+        expectBoth(service)
+    }
+    scenario("BLE expiry after profile offer preserves direct manual audio callbacks") { service ->
+        service.queueDirect(); service.expire(); service.expire(); expectBoth(service)
+    }
+    scenario("BLE expiry after profile offer preserves manual takeover callbacks") { service ->
+        service.captureTakeover(); check(service.queueTakeover()); service.expire(); expectBoth(service)
+    }
+    scenario("BLE expiry during accepted profile policy still permits explicit connect") { service ->
+        service.queueDirect(); service.profiles.first().onPolicy = { service.expire() }; expectBoth(service)
+    }
+    scenario("BLE expiry clears presentation without audio or head tracking retirement") { service ->
+        val media = service.audioProfileOwnership.captureMedia(PEER)!!
+        val generation = service.takeoverGeneration.get()
+        service.expire()
+        check(service.lastBatterySnapshot == null && service.batteryNotification.invalidations == 1)
+        check(service.notificationLease.clears == 1 && service.batteryHistory.flushes == 1 && service.widgetUpdates == 1)
+        check(service.notificationGeneration.get() == 1L)
+        check(service.takeoverGeneration.get() == generation && service.audioProfileOwnership.isCurrentMedia(media))
+        check(service.conversationResets == 0 && service.audioChargingState.resets == 0 && service.headTrackingStartup.resets == 0)
+    }
+    scenario("live control connection is immune to BLE disappearance") { service ->
+        service.publishControl(); service.queueDirect()
+        val generation = service.takeoverGeneration.get()
+        val presence = service.blePresenceGeneration.get()
+        service.expire()
+        check(service.notificationGeneration.get() == 0L && service.lastBatterySnapshot != null)
+        check(service.takeoverGeneration.get() == generation && service.blePresenceGeneration.get() == presence)
+        expectBoth(service)
+    }
+    scenario("real control retirement still rejects queued explicit callbacks") { service ->
+        service.publishControl(); service.queueDirect(); service.retireControl(); service.dispatchProfiles()
+        check(service.connectionCount() == 0 && service.policyCount() == 0)
+        check(service.conversationResets == 1 && service.headTrackingStartup.resets == 1)
+    }
+    scenario("real control retirement still closes stale ownership watch") { service ->
+        val ticket = service.audioProfileOwnership.beginExplicitConnect(PEER)
+        val watch = service.installWatch(ticket)
+        service.retireControl()
+        check(!service.audioProfileOwnership.isCurrent(ticket) && watch.closes == 1)
+    }
+    scenario("user revoke still rejects queued explicit work") { service ->
+        service.queueDirect(); service.revoke(); service.expire(); service.dispatchProfiles()
+        check(service.connectionCount() == 0 && service.policyCount() == 0)
+    }
+    scenario("changed peer still rejects queued explicit work") { service ->
+        service.queueDirect(); service.selectOther(); service.expire(); service.dispatchProfiles()
+        check(service.connectionCount() == 0 && service.policyCount() == 0)
+    }
+    scenario("closed service still rejects queued explicit work") { service ->
+        service.queueDirect(); service.close(); service.expire(); service.dispatchProfiles()
+        check(service.connectionCount() == 0 && service.policyCount() == 0)
+        check(service.notificationGeneration.get() == 0L)
+    }
+    scenario("replaced service ignores late BLE expiry") { service ->
+        val generation = service.blePresenceGeneration.get()
+        ServiceManager.current = null; service.expire()
+        check(service.blePresenceGeneration.get() == generation && service.notificationGeneration.get() == 0L)
+    }
+    for (reason in listOf("music", "call")) {
+        scenario("socketless automatic $reason takeover expires and fresh request succeeds") { service ->
+            val stale = service.captureTakeover(reason, manual = false)
+            check(stale()); service.expire(); check(!stale()) { "Expired automatic takeover remained current" }
+            val fresh = service.captureTakeover(reason, manual = false)
+            check(fresh()) { "New automatic request was permanently blocked" }
+        }
+    }
+    for (kind in listOf("manual", "reverse", "head")) {
+        scenario("socketless explicit $kind takeover survives BLE expiry") { service ->
+            val current = service.captureTakeover(if (kind == "reverse") "reverse" else "music",
+                manual = kind == "manual", head = kind == "head")
+            check(current()); service.expire(); check(current()) { "Explicit $kind request was revoked by BLE expiry" }
+        }
+    }
+    scenario("connected automatic takeover survives BLE expiry") { service ->
+        service.publishControl(); val current = service.captureTakeover(manual = false)
+        service.expire(); check(current())
+    }
+    scenario("actual BLE auto socket guard expires and fresh advertisement remains eligible") { service ->
+        service.observeDisconnected()
+        val stale = service.autoSocketGuards.single()
+        check(stale()); service.expire(); check(!stale()) { "BLE-expired socket attempt remained eligible" }
+        service.observeDisconnected()
+        check(service.autoSocketGuards.size == 2 && service.autoSocketGuards.last()())
+        check(!stale())
+    }
+    scenario("expired automatic profile callbacks retire and fresh automatic audio can connect") { service ->
+        service.captureTakeover(manual = false); check(service.queueTakeover())
+        service.expire(); service.dispatchProfiles()
+        check(service.connectionCount() == 0 && service.policyCount() == 0)
+        service.captureTakeover(manual = false); check(service.queueTakeover()); expectBoth(service)
+    }
+    scenario("BLE expiry clears speculative claims without revoking accepted release grants") { service ->
+        val ownership = service.audioProfileOwnership
+        ownership.claim(PEER)
+        val release = ownership.beginRelease(PEER, restorable = true)!!
+        check(ownership.applyReleasePolicy(release, BluetoothProfile.A2DP) { true })
+        service.expire()
+        val restore = ownership.beginRestore(PEER)!!
+        check(restore.profiles == setOf(BluetoothProfile.A2DP) && restore.releasedProfiles == setOf(BluetoothProfile.A2DP))
+    }
+    scenario("queued claim-only restore loses eligibility at expiry") { service ->
+        val ownership = service.audioProfileOwnership
+        ownership.claim(PEER)
+        val restore = ownership.beginRestore(PEER)!!
+        service.expire()
+        var actions = 0
+        restore.profiles.forEach { profile -> ownership.withCurrent(restore, profile) { actions++ } }
+        check(actions == 0 && ownership.beginRestore(PEER) == null)
+    }
+    scenario("real socket publication protects the outer-guard to manager-lock gap") {
+        me.kavishdevar.librepods.services.publication.runPublicationRaceRegressions()
+    }
+    println("$total scenarios, $failures failures")
+    check(failures == 0) { "BLE presence lifecycle regression failed" }
+}
