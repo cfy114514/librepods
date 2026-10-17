@@ -259,6 +259,16 @@ class AACPManager {
         return true
     }
 
+    internal fun parseAndStoreHeadphoneEq(packet: ByteArray, canStore: () -> Boolean = { true }): FloatArray? {
+        require(packet.size == 140 && packet[6] == 0x84.toByte()) { "Invalid headphone accommodation packet" }
+        // Preserve the first of the four little-endian EQ blocks; their other roles are unknown.
+        val buffer = ByteBuffer.wrap(packet, 12, 32).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
+        val receivedEq = FloatArray(8) { buffer.get(it) }
+        return if (setHeadphoneEqState(receivedEq, packet[10] == 0x01.toByte(), packet[11] == 0x01.toByte(), canStore)) {
+            receivedEq
+        } else null
+    }
+
     @Synchronized
     internal fun setCustomEqState(value: CustomEq, canStore: () -> Boolean = { true }): Boolean {
         if (!canStore()) return false
@@ -609,13 +619,7 @@ class AACPManager {
                         return
                     }
 
-                    // there are 4 eqs. i am not sure what those are for, maybe all 4 listening modes, or maybe phone+media left+right, but then there shouldn't be another flag for phone/media visible. just directly the EQ... weird.
-                    // the EQs are little endian floats
-                    val eq1 =
-                        ByteBuffer.wrap(packet, 12, 32).order(ByteOrder.LITTLE_ENDIAN).asFloatBuffer()
-                    // for now, taking just the first EQ
-                    val receivedEq = FloatArray(8) { i -> eq1.get(i) }
-                    if (!setHeadphoneEqState(receivedEq, packet[11] == 0x01.toByte(), packet[10] == 0x01.toByte(), current)) return
+                    val receivedEq = parseAndStoreHeadphoneEq(packet, current) ?: return
 
                     if (BuildConfig.DEBUG) Log.d(
                         TAG,

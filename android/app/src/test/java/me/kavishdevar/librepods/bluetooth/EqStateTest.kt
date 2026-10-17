@@ -1,10 +1,37 @@
 package me.kavishdevar.librepods.bluetooth
 
 import me.kavishdevar.librepods.data.CustomEq
+import java.nio.ByteBuffer
+import java.nio.ByteOrder
 import org.junit.Assert.*
 import org.junit.Test
 
 class EqStateTest {
+    @Test fun headphoneEqReadbackPreservesTheDocumentedPhoneThenMediaFlags() {
+        // docs/AAP Definitions.md: 53 00 84 00 02 02 [Phone] [Media], then four EQ blocks.
+        val expectedEq = FloatArray(8) { it * 0.125f }
+        val payload = ByteBuffer.allocate(128).order(ByteOrder.LITTLE_ENDIAN).apply {
+            repeat(4) { expectedEq.forEach { putFloat(it) } }
+        }.array()
+        for (phone in listOf(false, true)) for (media in listOf(false, true)) {
+            val manager = AACPManager()
+            val packet = byteArrayOf(4, 0, 4, 0, 0x53, 0, 0x84.toByte(), 0, 2, 2,
+                if (phone) 1 else 2, if (media) 1 else 2) + payload
+
+            assertNull(manager.parseAndStoreHeadphoneEq(packet) { false })
+            assertArrayEquals(FloatArray(8), manager.eqData, 0f)
+            assertFalse(manager.eqOnPhone)
+            assertFalse(manager.eqOnMedia)
+
+            val decoded = manager.parseAndStoreHeadphoneEq(packet)
+
+            assertEquals(phone, manager.eqOnPhone)
+            assertEquals(media, manager.eqOnMedia)
+            assertArrayEquals(expectedEq, decoded, 0f)
+            assertArrayEquals(expectedEq, manager.eqData, 0f)
+        }
+    }
+
     @Test fun eqBuffersCannotBeChangedByTheirCallerOrReader() {
         val manager = AACPManager()
         val source = FloatArray(8) { it.toFloat() }
