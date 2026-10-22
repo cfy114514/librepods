@@ -64,8 +64,10 @@ class BLEManager(private val context: Context) {
                 isCaseCharging == other.isCaseCharging
         /** Observation time keeps the device alive, but is not a device state change. */
         internal fun hasSameStateAs(other: AirPodsStatus): Boolean =
-            address == other.address &&
-                ownerAddress == other.ownerAddress &&
+            address == other.address && hasSameIdentityStateAs(other)
+
+        internal fun hasSameIdentityStateAs(other: AirPodsStatus): Boolean =
+            ownerAddress == other.ownerAddress &&
                 paired == other.paired &&
                 model == other.model &&
                 leftBattery == other.leftBattery &&
@@ -291,6 +293,7 @@ class BLEManager(private val context: Context) {
             lastBroadcastTime = SystemClock.elapsedRealtime()
 
             val previousStatus = deviceStatusMap[address]
+            val previousIdentityStatus = mostRecentAddress?.let { deviceStatusMap[it] }
             deviceStatusMap[address] = parsedStatus
             // Keep nanosecond admission order even when lastSeen milliseconds tie.
             mostRecentAddress = address
@@ -300,8 +303,11 @@ class BLEManager(private val context: Context) {
                 if (previousStatus == null) {
                     listener.onBroadcastFromNewAddress(parsedStatus)
                     Log.d(TAG, "New AirPods device detected: $address")
-                } else if (!parsedStatus.hasSameStateAs(previousStatus)) {
-                    listener.onDeviceStatusChanged(parsedStatus, previousStatus)
+                }
+                // Admission is ordered across the selected identity, so transitions
+                // must follow that same identity even when its address rotates.
+                if (previousIdentityStatus != null && !parsedStatus.hasSameIdentityStateAs(previousIdentityStatus)) {
+                    listener.onDeviceStatusChanged(parsedStatus, previousIdentityStatus)
                 }
 
                 if (lidState.observe(parsedStatus.lidOpen, result.timestampNanos)) {

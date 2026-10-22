@@ -27,6 +27,8 @@ private class Fixture : AutoCloseable {
     val scanner = BluetoothLeScanner()
     val battery = mutableListOf<BLEManager.AirPodsStatus>()
     val changed = mutableListOf<BLEManager.AirPodsStatus>()
+    val previousStates = mutableListOf<BLEManager.AirPodsStatus?>()
+    val newAddresses = mutableListOf<String>()
     val lids = mutableListOf<Boolean>()
     var disappearances = 0
     val values = mutableMapOf("IRK" to Base64.getEncoder().encodeToString(KEY),
@@ -37,8 +39,11 @@ private class Fixture : AutoCloseable {
     val manager = BLEManager(Context(preferences, BluetoothManager(BluetoothAdapter(scanner)))).apply {
         setAirPodsStatusListener(object : BLEManager.AirPodsStatusListener {
             override fun onBatteryObserved(device: BLEManager.AirPodsStatus) { battery.add(device) }
-            override fun onDeviceStatusChanged(device: BLEManager.AirPodsStatus, previousStatus: BLEManager.AirPodsStatus?) { changed.add(device) }
-            override fun onBroadcastFromNewAddress(device: BLEManager.AirPodsStatus) {}
+            override fun onDeviceStatusChanged(device: BLEManager.AirPodsStatus, previousStatus: BLEManager.AirPodsStatus?) {
+                changed.add(device)
+                previousStates.add(previousStatus)
+            }
+            override fun onBroadcastFromNewAddress(device: BLEManager.AirPodsStatus) { newAddresses.add(device.address) }
             override fun onLidStateChanged(lidOpen: Boolean) { lids.add(lidOpen) }
             override fun onEarStateChanged(device: BLEManager.AirPodsStatus, leftInEar: Boolean, rightInEar: Boolean) {}
             override fun onBatteryChanged(device: BLEManager.AirPodsStatus) {}
@@ -79,10 +84,57 @@ private fun newestRotatingAddressWinsTheWholeBatch() = Fixture().use { f ->
         result(ADDRESS, 3_000, state = 0, percent = 20, lidOpen = false),
         result(nextAddress, 4_000)))
     check(f.battery.map { it.leftBattery } == listOf(50, 80)) { "Older rotating address overwrote battery" }
-    check(f.changed.isEmpty()) { "Older known address emitted a disconnected event" }
+    check(f.changed.map { it.connectionState } == listOf("Music")) { "The newest state was lost or an older disconnected event was replayed" }
     val status = checkNotNull(f.manager.getMostRecentStatus())
     check(status.address == nextAddress && status.connectionState == "Music" && status.lastSeen == 4_000L)
     check(f.lids == listOf(false, true))
+}
+
+private fun disconnectedTransitionSurvivesAddressRotation() = Fixture().use { f ->
+    val nextAddress = rotatingAddress()
+    SystemClock.now = 1_000; f.single(seen = 1_000, state = 4)
+    SystemClock.now = 5_000
+    f.scanner.callback!!.onBatchScanResults(listOf(
+        result(ADDRESS, 3_000, state = 0), result(nextAddress, 4_000, state = 0)))
+    SystemClock.now = 6_000; f.single(address = nextAddress, seen = 6_000, state = 0)
+    check(f.changed.map { it.connectionState } == listOf("Disconnected")) {
+        "Automatic takeover lost the current disconnected transition or received a duplicate"
+    }
+    check(f.changed.single().address == nextAddress)
+    check(f.previousStates.single()?.connectionState == "Idle")
+    check(f.newAddresses == listOf(ADDRESS, nextAddress))
+}
+
+private fun firstObservationAndUnchangedRotationDoNotEmitStateChanges() = Fixture().use { f ->
+    val nextAddress = rotatingAddress()
+    SystemClock.now = 1_000; f.single(seen = 1_000, state = 0)
+    check(f.changed.isEmpty() && f.newAddresses == listOf(ADDRESS))
+    SystemClock.now = 2_000; f.single(address = nextAddress, seen = 2_000, state = 0)
+    SystemClock.now = 3_000; f.single(seen = 3_000, state = 0)
+    check(f.changed.isEmpty()) { "An unchanged rotation invented a state transition" }
+    check(f.newAddresses == listOf(ADDRESS, nextAddress))
+}
+
+private fun knownAddressTransitionsUseTheLatestIdentityState() = Fixture().use { f ->
+    val nextAddress = rotatingAddress()
+    SystemClock.now = 1_000; f.single(seen = 1_000, state = 4)
+    SystemClock.now = 2_000; f.single(address = nextAddress, seen = 2_000, state = 0)
+    // A's cached state is already Idle, but the identity's latest state was Disconnected.
+    SystemClock.now = 3_000; f.single(seen = 3_000, state = 4)
+    SystemClock.now = 4_000; f.single(seen = 4_000, state = 4)
+    check(f.changed.map { it.connectionState } == listOf("Disconnected", "Idle"))
+    check(f.previousStates.map { it?.connectionState } == listOf("Idle", "Disconnected"))
+    check(f.newAddresses == listOf(ADDRESS, nextAddress))
+}
+
+private fun knownAddressDoesNotRepeatAnotherAddressStateChange() = Fixture().use { f ->
+    val nextAddress = rotatingAddress()
+    SystemClock.now = 1_000; f.single(seen = 1_000, state = 4)
+    SystemClock.now = 2_000; f.single(address = nextAddress, seen = 2_000, state = 0)
+    // A's old Idle cache must not manufacture a second disconnected transition.
+    SystemClock.now = 3_000; f.single(seen = 3_000, state = 0)
+    check(f.changed.map { it.connectionState } == listOf("Disconnected"))
+    check(f.newAddresses == listOf(ADDRESS, nextAddress))
 }
 
 private fun staleFirstObservationCannotCreatePresence() = Fixture().use { f ->
@@ -195,6 +247,10 @@ fun main() {
     val cases = listOf(
         "older same-address result cannot replace state" to ::olderSameAddressCannotChangeStatus,
         "newest rotating address wins the whole batch" to ::newestRotatingAddressWinsTheWholeBatch,
+        "disconnected transition survives address rotation" to ::disconnectedTransitionSurvivesAddressRotation,
+        "first observation and unchanged rotation do not emit state changes" to ::firstObservationAndUnchangedRotationDoNotEmitStateChanges,
+        "known address transitions use the latest identity state" to ::knownAddressTransitionsUseTheLatestIdentityState,
+        "known address does not repeat another address state change" to ::knownAddressDoesNotRepeatAnotherAddressStateChange,
         "stale first observation cannot create presence" to ::staleFirstObservationCannotCreatePresence,
         "presence expires from observation time" to ::presenceExpiresFromObservationTime,
         "equal timestamp cannot refresh presence" to ::equalTimestampCannotRefreshPresence,

@@ -34,7 +34,18 @@ class AirPodsStatusTest {
         changes.forEach { changed ->
             assertFalse("State change was ignored: $changed", status.hasSameStateAs(changed))
             assertFalse(changed.hasSameStateAs(status))
+            if (changed.address == status.address) {
+                assertFalse("Identity state change was ignored: $changed", status.hasSameIdentityStateAs(changed))
+                assertFalse(changed.hasSameIdentityStateAs(status))
+            }
         }
+    }
+
+    @Test fun addressRotationAloneDoesNotChangeTheSelectedIdentityState() {
+        val rotated = status.copy(address = "11:22:33:44:55:66", lastSeen = 2L)
+        assertTrue(status.hasSameIdentityStateAs(rotated))
+        assertTrue(rotated.hasSameIdentityStateAs(status))
+        assertFalse(status.hasSameStateAs(rotated))
     }
 
     @Test fun timestampsAddressRotationAndLidMotionDoNotRepeatBatteryIpc() {
