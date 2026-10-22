@@ -138,6 +138,202 @@ class AudioProfileOwnershipTest {
         assertFalse(state.hasReleased(peer))
     }
 
+    @Test fun expiredBleClaimCannotRestoreUnreleasedProfiles() {
+        val state = policy()
+        state.claim(peer)
+        val restore = state.beginRestore(peer)!!
+        state.expireClaim()
+        assertFalse(state.withCurrent(restore, a2dp) { fail("Expired presence must not grant a connection") })
+        assertFalse(state.withCurrent(restore, headset) { fail("Expired presence must not grant a connection") })
+        assertNull(state.beginRestore(peer))
+    }
+
+    @Test fun expiredBleClaimPreservesAcceptedPolicyRelease() {
+        val state = policy()
+        state.claim(peer)
+        val release = state.beginRelease(peer, true)!!
+        state.recordReleased(release, a2dp, true)
+        val restore = state.beginRestore(peer)!!
+        state.expireClaim()
+        assertTrue(state.withCurrent(restore, a2dp) {})
+        assertFalse(state.withCurrent(restore, headset) { fail("Only the accepted release may restore") })
+        assertEquals(setOf(a2dp), state.beginRestore(peer)!!.profiles)
+    }
+
+    @Test fun expiredBleClaimPreservesManualSelectionBeforeAdmission() {
+        val state = policy()
+        state.claim(peer)
+        val selection = state.captureSelection(peer)!!
+        state.expireClaim()
+        val manual = state.beginExplicitConnectIfCurrent(selection)!!
+        assertTrue(state.withCurrent(manual, a2dp) {})
+    }
+
+    @Test fun expiredBlePresencePreservesExplicitRequestButRealDisconnectRevokesIt() {
+        val state = policy()
+        val manual = state.beginExplicitConnect(peer)
+        state.expireClaim()
+        assertTrue(state.withCurrent(manual, a2dp) {})
+        assertTrue(state.withCurrent(manual, headset) {})
+        state.socketClosed()
+        assertFalse(state.withCurrent(manual, a2dp) { fail("A real disconnect must revoke old work") })
+    }
+
+    @Test fun passiveClaimCannotReplaceQueuedManualAudio() {
+        val state = policy()
+        val manual = state.beginExplicitConnect(peer)
+        state.claim(peer.lowercase())
+        assertTrue(state.withCurrent(manual, a2dp) {})
+        assertTrue(state.withCurrent(manual, headset) {})
+    }
+
+    @Test fun manualProtectsEveryReservedProfileUntilAllWorkFinishes() {
+        val state = policy()
+        val manual = state.beginExplicitConnect(peer)
+        state.completeExplicitProfile(manual, a2dp)
+        assertFalse(state.withCurrent(manual, a2dp) { fail("Completed profile cannot run twice") })
+        assertFalse(state.claim(peer))
+        assertNull(state.beginRestore(peer))
+        assertTrue(state.withCurrent(manual, headset) {})
+        state.completeExplicitProfile(manual, headset)
+        assertFalse(state.isCurrent(manual))
+        assertTrue(state.claim(peer))
+        assertEquals(setOf(a2dp, headset), state.beginRestore(peer)!!.profiles)
+    }
+
+    @Test fun ordinaryCompletionPreservesSelectionAndMediaButNotExplicitTicket() {
+        val state = policy()
+        val manual = state.beginExplicitConnect(peer)
+        val selection = state.captureSelection(peer)!!
+        val media = state.captureMedia(peer)!!
+        state.completeExplicitProfile(manual, a2dp)
+        state.completeExplicitProfile(manual, headset)
+        assertFalse(state.isCurrent(manual))
+        assertTrue(state.isCurrentMedia(media))
+        assertNotNull(state.beginExplicitConnectIfCurrent(selection))
+    }
+
+    @Test fun unsuccessfulExplicitWorkCanRetireWithoutEverPublishingControl() {
+        val state = policy()
+        val failed = state.beginExplicitConnect(peer)
+        // Terminal completion also represents lookup rejection or a denied profile.
+        state.completeExplicitProfile(failed, a2dp)
+        state.completeExplicitProfile(failed, headset)
+        assertTrue(state.claim(peer))
+        assertNotNull(state.beginRestore(peer))
+    }
+
+    @Test fun timeoutRetiresLateActionsAndAllowsAFreshClaim() {
+        val state = policy()
+        val timedOut = state.beginExplicitConnect(peer)
+        val media = state.captureMedia(peer)!!
+        state.abandonExplicitConnect(timedOut)
+        assertFalse(state.withCurrent(timedOut, a2dp) { fail("Late callback after timeout") })
+        assertFalse(state.withCurrent(timedOut, headset) { fail("Late callback after timeout") })
+        assertTrue(state.isCurrentMedia(media))
+        assertTrue(state.claim(peer))
+        assertNotNull(state.beginRestore(peer))
+    }
+
+    @Test fun duplicateAndStaleCompletionsCannotReleaseANewerManualRequest() {
+        val state = policy()
+        val old = state.beginExplicitConnect(peer)
+        val current = state.beginExplicitConnect(peer)
+        state.completeExplicitProfile(old, a2dp)
+        state.completeExplicitProfile(old, headset)
+        state.abandonExplicitConnect(old)
+        state.completeExplicitProfile(current, a2dp)
+        state.completeExplicitProfile(current, a2dp)
+        state.completeExplicitProfile(current, 999)
+        assertFalse(state.claim(peer))
+        assertTrue(state.withCurrent(current, headset) {})
+        state.completeExplicitProfile(current, headset)
+        assertTrue(state.claim(peer))
+    }
+
+    @Test fun automaticTakeoverCannotSupersedeActiveUserWork() {
+        val state = policy()
+        val manual = state.beginExplicitConnect(peer)
+        val selection = state.captureSelection(peer)!!
+        assertNull(state.beginExplicitConnectIfCurrent(selection, userInitiated = false))
+        assertTrue(state.withCurrent(manual, a2dp) {})
+        assertTrue(state.withCurrent(manual, headset) {})
+        state.abandonExplicitConnect(manual)
+        assertNotNull(state.beginExplicitConnectIfCurrent(selection, userInitiated = false))
+    }
+
+    @Test fun userCanSupersedeAutomaticWorkAndAutomaticWorkCanReplaceAutomaticWork() {
+        val state = policy()
+        val first = state.beginExplicitConnectIfCurrent(state.captureSelection(peer)!!, userInitiated = false)!!
+        val second = state.beginExplicitConnectIfCurrent(state.captureSelection(peer)!!, userInitiated = false)!!
+        assertFalse(state.isCurrent(first))
+        val manual = state.beginExplicitConnect(peer)
+        assertFalse(state.isCurrent(second))
+        state.completeExplicitProfile(second, a2dp)
+        state.abandonExplicitConnect(second)
+        assertFalse(state.claim(peer))
+        assertTrue(state.withCurrent(manual, headset) {})
+    }
+
+    @Test fun freshPassiveClaimCanReplaceAutomaticRequestWhoseSourceExpired() {
+        val state = policy()
+        val automatic = state.beginExplicitConnectIfCurrent(state.captureSelection(peer)!!, userInitiated = false)!!
+        state.expireClaim()
+        assertTrue(state.claim(peer))
+        assertFalse(state.isCurrent(automatic))
+        state.abandonExplicitConnect(automatic)
+        assertEquals(setOf(a2dp, headset), state.beginRestore(peer)!!.profiles)
+    }
+
+    @Test fun atomicUserAdmissionSurvivesPassiveClaimButRejectsChangedSelectionOrSource() {
+        val state = policy()
+        state.claim(peer)
+        val manual = state.beginExplicitConnectIfSelected(peer.lowercase())!!
+        assertTrue(state.withCurrent(manual, a2dp) {})
+        assertNull(state.beginExplicitConnectIfSelected(peer, valid = { false }))
+        assertTrue(state.isCurrent(manual))
+        state.select("11:22:33:44:55:66")
+        assertNull(state.beginExplicitConnectIfSelected(peer))
+        assertFalse(state.isCurrent(manual))
+    }
+
+    @Test fun actualRetirementStillWinsOverActiveUserAndLateCompletion() {
+        val retirements: List<(AudioProfileOwnership) -> Unit> = listOf(
+            { it.socketClosed() }, { it.revoke() }, { it.revoke(lost = true) },
+            { it.select("11:22:33:44:55:66") }, { it.beginRelease(peer, restorable = false) }
+        )
+        for (retire in retirements) {
+            val state = policy()
+            val manual = state.beginExplicitConnect(peer)
+            retire(state)
+            state.completeExplicitProfile(manual, a2dp)
+            state.abandonExplicitConnect(manual)
+            assertFalse(state.withCurrent(manual, headset) { fail("Retired user operation") })
+        }
+    }
+
+    @Test fun timeoutDoesNotWaitForBinderAndRejectsItsLateContinuation() {
+        val state = policy()
+        val manual = state.beginExplicitConnect(peer)
+        val entered = CountDownLatch(1)
+        val complete = CountDownLatch(1)
+        val workers = Executors.newFixedThreadPool(2)
+        try {
+            val blocked = workers.submit<Boolean> {
+                state.withCurrent(manual, a2dp) {
+                    entered.countDown()
+                    assertTrue(complete.await(3, TimeUnit.SECONDS))
+                }
+            }
+            assertTrue(entered.await(1, TimeUnit.SECONDS))
+            workers.submit { state.abandonExplicitConnect(manual) }.get(500, TimeUnit.MILLISECONDS)
+            complete.countDown()
+            assertFalse(blocked.get(1, TimeUnit.SECONDS))
+            assertFalse(state.withCurrent(manual, headset) { fail("Timed-out headset request") })
+            assertTrue(state.claim(peer))
+        } finally { complete.countDown(); workers.shutdownNow() }
+    }
+
     @Test fun failedRestoreAndInvalidSocketKeepReleaseForAValidRetry() {
         val state = policy()
         val release = state.beginRelease(peer, true)!!

@@ -281,7 +281,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private val ownedControlSocket = java.util.concurrent.atomic.AtomicReference<BluetoothSocket?>()
     private val ownedAttSocket = java.util.concurrent.atomic.AtomicReference<BluetoothSocket?>()
     private enum class AudioProfileAction { DISCOVER, SDP, ATTACH, PAUSE, POLICY }
-    private data class AudioProfileRequest(val generation: Long, val action: (BluetoothProfile) -> Unit)
+    private class AudioProfileRequest(
+        val generation: Long, val action: (BluetoothProfile) -> Unit, private val onComplete: () -> Unit = {}
+    ) {
+        private val completed = AtomicBoolean()
+        fun complete() { if (completed.compareAndSet(false, true)) onComplete() }
+    }
     private val profileOwnerToken = Any()
     private class PendingAudioProfileRecipient(
         service: AirPodsService, val ownerToken: Any, val ticket: PendingProfileRequests.Ticket<Int>
@@ -294,7 +299,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         fun sameRequest(other: PendingAudioProfileRecipient) = ownerToken === other.ownerToken && ticket == other.ticket
     }
     private val profileRequests = serviceResources.track(PendingProfileRequests<Int, AudioProfileAction, AudioProfileRequest>(
-        setOf(BluetoothProfile.A2DP, BluetoothProfile.HEADSET), AudioProfileAction.entries.toSet()))
+        setOf(BluetoothProfile.A2DP, BluetoothProfile.HEADSET), AudioProfileAction.entries.toSet(),
+        onDiscard = { it.complete() }))
     private val batteryWidgetUpdates = serviceResources.track(CoalescedWorkSession(
         Dispatchers.IO, onError = { Log.w(TAG, "Battery widget refresh failed", it) },
         work = ::publishBatteryWidgets
@@ -353,6 +359,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         ConflatedCallbackSession<ConversationUpdate>(Dispatchers.Main, ::handleConversationUpdate)
     )
     private val audioProfileOwnership = AudioProfileOwnership(setOf(BluetoothProfile.A2DP, BluetoothProfile.HEADSET))
+    private val audioConnectDeadline = serviceResources.track(AudioConnectDeadline(audioProfileOwnership, serviceScope))
     private data class MediaInformationRequest(
         val socket: BluetoothSocket, val selfMac: String, val streaming: Boolean,
         val ticket: AudioProfileOwnership.MediaTicket, val deviceSession: Long
@@ -389,11 +396,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private data class TakeoverRequest(
         val action: TakeoverAction, val reason: String, val peer: String, val generation: Long, val deviceSession: Long?,
         val socket: BluetoothSocket?, val selfMac: String?, val manual: Boolean, val headTracking: Boolean,
-        val headGeneration: Long? = null
+        val headGeneration: Long? = null, val bleGeneration: Long
     ) {
         val explicit: Boolean get() = action == TakeoverAction.REVERSE || manual || headTracking
     }
     private val takeoverGeneration = AtomicLong()
+    private val blePresenceGeneration = AtomicLong()
     private val takeoverRequests = serviceResources.track(KeyedWorkSession<TakeoverAction, TakeoverRequest>(
         TakeoverAction.entries.toSet(), Dispatchers.IO,
         onError = { Log.w(TAG, "Audio takeover failed", it) }, consume = ::performTakeover
@@ -476,6 +484,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         override fun onDeviceStatusChanged(
             device: BLEManager.AirPodsStatus, previousStatus: BLEManager.AirPodsStatus?
         ) {
+            val generation = takeoverGeneration.get()
+            val bleGeneration = blePresenceGeneration.get()
             if (!config.bleOnlyMode && config.takeoverWhenDisconnected &&
                 device.connectionState == "Disconnected" && BluetoothConnectionManager.aacpSocket?.isConnected != true) {
                 Log.d(TAG, "Seems no device has taken over, we will.")
@@ -484,13 +494,16 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 val savedAddress = sharedPreferences.getString("mac_address", "") ?: ""
                 if (BluetoothAdapter.checkBluetoothAddress(savedAddress)) {
                     val bluetoothDevice = bluetoothAdapter.getRemoteDevice(savedAddress)
-                    serviceScope.launch {
-                        if (config.takeoverWhenDisconnected && !config.bleOnlyMode &&
-                            savedAddress.equals(macAddress, ignoreCase = true) && !serviceResources.isClosed) {
-                            audioProfileOwnership.claim(savedAddress)
-                            connectToSocket(bluetoothAdapter, bluetoothDevice)
-                        }
+                    val canConnect = {
+                        generation == takeoverGeneration.get() && bleGeneration == blePresenceGeneration.get() &&
+                            config.takeoverWhenDisconnected && !config.bleOnlyMode &&
+                            savedAddress.equals(macAddress, ignoreCase = true) && !serviceResources.isClosed
                     }
+                    synchronized(BluetoothConnectionManager) {
+                        if (!canConnect() || BluetoothConnectionManager.aacpSocket?.isConnected == true) return
+                        if (!audioProfileOwnership.claim(savedAddress)) return
+                    }
+                    enqueueSocketConnection(bluetoothAdapter, bluetoothDevice, manual = false, canConnect = canConnect)
                 }
             }
             Log.d(TAG, "Device status changed")
@@ -534,9 +547,18 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
         override fun onDeviceDisappeared() {
             Log.d(TAG, "All disappeared")
-            if (BluetoothConnectionManager.aacpSocket?.isConnected != true) {
-                updateNotificationContent(false)
-            }
+            expireBlePresence()
+        }
+    }
+
+    private fun expireBlePresence() {
+        // Serialize with socket publication: a live control link is independent of BLE.
+        synchronized(BluetoothConnectionManager) {
+            if (serviceResources.isClosed || ServiceManager.getService() !== this ||
+                BluetoothConnectionManager.aacpSocket?.isConnected == true) return
+            blePresenceGeneration.incrementAndGet()
+            audioProfileOwnership.expireClaim()
+            clearConnectionNotification()
         }
     }
 
@@ -799,22 +821,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 if (intent?.action == AirPodsNotifications.AIRPODS_CONNECTION_DETECTED) {
                     val detectedDevice = intent.getParcelableExtra("device", BluetoothDevice::class.java) ?: return
                     attachControlIfAudioConnected(detectedDevice)
-
-                } else if (intent?.action == AirPodsNotifications.AIRPODS_DISCONNECTED) {
-                    synchronized(BluetoothConnectionManager) {
-                        if (BluetoothConnectionManager.aacpSocket?.isConnected == true) {
-                            Log.d(TAG, "Ignoring a stale disconnect broadcast after reconnection")
-                            return
-                        }
-                        device = null
-//                      isConnectedLocally = false
-                        popupShown = false
-                        updateNotificationContent(false)
-                        aacpManager.disconnected()
-                        BluetoothConnectionManager.aacpSocket = null
-                        BluetoothConnectionManager.attSocket = null
-                        clearA2dpConnectionReceiver()
-                    }
                 }
             }
         }
@@ -847,7 +853,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
         val deviceIntentFilter = IntentFilter().apply {
             addAction(AirPodsNotifications.AIRPODS_CONNECTION_DETECTED)
-            addAction(AirPodsNotifications.AIRPODS_DISCONNECTED)
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -1589,6 +1594,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     private fun revokeAudioRestore(ownershipLost: Boolean = false) {
         takeoverGeneration.incrementAndGet()
+        manualConnectionGeneration.incrementAndGet()
         audioProfileOwnership.revoke(ownershipLost)
         resetConversation()
         serviceScope.launch(Dispatchers.Main.immediate) { clearStaleA2dpConnectionReceiver() }
@@ -1793,6 +1799,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 notificationGeneration.incrementAndGet()
                 metadataSelection.incrementAndGet()
                 takeoverGeneration.incrementAndGet()
+                manualConnectionGeneration.incrementAndGet()
                 val previousHeadPeer = me.kavishdevar.librepods.data.batteryHistoryIdentity(macAddress)
                 macAddress = preferences.getString(key, "") ?: ""
                 if (previousHeadPeer != me.kavishdevar.librepods.data.batteryHistoryIdentity(macAddress)) HeadTracking.reset()
@@ -2356,18 +2363,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         if (serviceResources.isClosed || ServiceManager.getService() !== this) return
         if (!connected) {
             headTrackingStartup.clear()
-            synchronized(this) {
-                notificationGeneration.incrementAndGet()
-                takeoverGeneration.incrementAndGet()
-                resetConversation()
-                audioChargingState.reset()
-                batteryNotification.invalidate()
-                audioProfileOwnership.socketClosed()
-                serviceScope.launch(Dispatchers.Main.immediate) { clearStaleA2dpConnectionReceiver() }
-                lastBatterySnapshot = null
-                if (::batteryHistory.isInitialized) { batteryHistory.flush(); updateBatteryWidget() }
-            }
-            notificationLease?.clear()
+            takeoverGeneration.incrementAndGet()
+            resetConversation()
+            audioChargingState.reset()
+            audioProfileOwnership.socketClosed()
+            serviceScope.launch(Dispatchers.Main.immediate) { clearStaleA2dpConnectionReceiver() }
+            clearConnectionNotification()
             return
         }
         val socket = BluetoothConnectionManager.aacpSocket ?: return
@@ -2381,6 +2382,15 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 isCurrentControlSocket(notice.socket) && notice.peer == me.kavishdevar.librepods.data.batteryHistoryIdentity(
                     sharedPreferences.getString("mac_address", "") ?: "")
         }
+    }
+
+    @Synchronized
+    private fun clearConnectionNotification() {
+        notificationGeneration.incrementAndGet()
+        batteryNotification.invalidate()
+        lastBatterySnapshot = null
+        if (::batteryHistory.isInitialized) { batteryHistory.flush(); updateBatteryWidget() }
+        notificationLease?.clear()
     }
 
     fun handleIncomingCall() {
@@ -2796,7 +2806,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             socket?.let { aacpManager.captureDeviceSession() }, socket,
             me.kavishdevar.librepods.data.batteryHistoryIdentity(localMac),
             manualTakeOverAfterReversed, startHeadTrackingAgain,
-            if (startHeadTrackingAgain) headTrackingSession.capture().id else null)
+            if (startHeadTrackingAgain) headTrackingSession.capture().id else null,
+            blePresenceGeneration.get())
         if (takeoverEnabled(request)) takeoverRequests.offer(action, request)
     }
 
@@ -2809,6 +2820,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private fun takeoverCurrent(request: TakeoverRequest, socket: BluetoothSocket? = request.socket): Boolean =
         !takeoverRequests.isClosed && !serviceResources.isClosed && ServiceManager.getService() === this &&
             request.generation == takeoverGeneration.get() && takeoverEnabled(request) &&
+            (request.explicit || request.socket != null || request.bleGeneration == blePresenceGeneration.get()) &&
             (request.headGeneration == null || headTrackingSession.currentStart(request.headGeneration) != null) &&
             (request.deviceSession == null || aacpManager.isCurrentDeviceSession(request.deviceSession)) &&
             request.peer == me.kavishdevar.librepods.data.batteryHistoryIdentity(
@@ -2881,7 +2893,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             } ?: return
             if (!takeoverCurrent(request) || !audioProfileOwnership.isCurrentMedia(media)) return
             // The primary connection timeout must not stall the routing request queue.
-            serviceScope.launch { if (takeoverCurrent(request)) connectToSocket(adapter, target) }
+            enqueueSocketConnection(adapter, target, manual = false, canConnect = { takeoverCurrent(request) })
         }
         showTakeoverIsland(request, null, IslandType.TAKING_OVER)
     }
@@ -2928,13 +2940,21 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         request: TakeoverRequest, target: BluetoothDevice, socket: BluetoothSocket?,
         sourceCurrent: () -> Boolean = { true }, beforeConnect: () -> Unit = {}
     ): AudioProfileOwnership.MediaTicket? {
-        val selection = audioProfileOwnership.captureSelection(target.address) ?: return null
         val valid = { takeoverCurrent(request, socket) && sourceCurrent() }
-        val ticket = audioProfileOwnership.beginExplicitConnectIfCurrent(selection, valid) ?: return null
-        if (!valid()) return null
-        beforeConnect()
-        serviceScope.launch(Dispatchers.Main.immediate) { clearStaleA2dpConnectionReceiver() }
-        connectAudioProfiles(this, target, ticket, socket, playWhenConnected = false, canConnect = valid)
+        val ticket = if (request.explicit) audioProfileOwnership.beginExplicitConnectIfSelected(target.address, valid)
+        else {
+            val selection = audioProfileOwnership.captureSelection(target.address) ?: return null
+            audioProfileOwnership.beginExplicitConnectIfCurrent(selection, valid, userInitiated = false)
+        } ?: return null
+        audioConnectDeadline.start(ticket)
+        try {
+            if (!valid()) { audioConnectDeadline.abandon(ticket); return null }
+            beforeConnect()
+            connectAudioProfiles(this, target, ticket, socket, playWhenConnected = false, canConnect = valid)
+        } catch (error: Exception) {
+            audioConnectDeadline.abandon(ticket)
+            throw error
+        }
         return audioProfileOwnership.captureMedia(target.address)
     }
 
@@ -2970,7 +2990,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         if (serviceResources.isClosed || config.bleOnlyMode) return
         val socket = BluetoothConnectionManager.aacpSocket
         if (socket?.isConnected == true) return
-        if (connectionInProgress.get() && device?.address != target.address) return
+        if (connectionAttempts.inProgress && device?.address != target.address) return
         device = target
         if (config.deviceName == "AirPods" && target.name != null) {
             config.deviceName = target.name ?: "AirPods"
@@ -2980,10 +3000,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         audioProfileOwnership.select(macAddress)
         sharedPreferences.edit { putString("mac_address", macAddress) }
         setMetadatas(target)
-        serviceScope.launch { connectToSocket(getSystemService(BluetoothManager::class.java).adapter, target) }
+        connectToSocket(getSystemService(BluetoothManager::class.java).adapter, target)
     }
 
-    private val connectionInProgress = AtomicBoolean(false)
+    private val connectionAttempts = ConnectionAttempts(serviceResources)
+    // A transport failure must not revoke the user's independent audio reconnect request.
+    private val manualConnectionGeneration = AtomicLong()
 
     internal fun shouldOpenAttChannel(model: AirPodsBase?): Boolean =
         // Known models without hearing features need neither ATT nor its framework lookup.
@@ -2993,35 +3015,34 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     fun connectToSocket(
         adapter: BluetoothAdapter, device: BluetoothDevice, manual: Boolean = false
     ) {
-        if (serviceResources.isClosed || !connectionInProgress.compareAndSet(false, true)) {
+        enqueueSocketConnection(adapter, device, manual)
+    }
+
+    private fun enqueueSocketConnection(
+        adapter: BluetoothAdapter, device: BluetoothDevice, manual: Boolean,
+        canConnect: () -> Boolean = { true }, afterConnect: (() -> Unit)? = null
+    ) {
+        // Admit before dispatch; disconnect must also cancel work still queued on IO.
+        val connection = connectionAttempts.begin(canConnect)
+        if (connection == null) {
             Log.d(TAG, "Connection already in progress or service stopped; ignoring request")
+            // Manual reconnect still requests audio when an automatic control attempt
+            // already owns admission. Its callback checks the captured user request.
+            if (afterConnect != null && !serviceResources.isClosed) serviceScope.launch { afterConnect() }
             return
         }
-        if (Looper.myLooper() == Looper.getMainLooper()) {
-            serviceScope.launch {
-                connectToSocketOnce(adapter, device, manual)
-            }.invokeOnCompletion { connectionInProgress.set(false) }
-            return
-        }
-        try {
-            connectToSocketOnce(adapter, device, manual)
-        } finally {
-            connectionInProgress.set(false)
-        }
+        serviceScope.launch {
+            connectToSocketOnce(adapter, device, manual, connection)
+            if (isActive && connectionAttempts.isCurrent(connection)) afterConnect?.invoke()
+        }.invokeOnCompletion { connectionAttempts.finish(connection) }
     }
 
     @SuppressLint("MissingPermission", "UnspecifiedRegisterReceiverFlag")
     private fun connectToSocketOnce(
-        adapter: BluetoothAdapter, device: BluetoothDevice, manual: Boolean
+        adapter: BluetoothAdapter, device: BluetoothDevice, manual: Boolean,
+        connection: ConnectionAttempts.Attempt
     ) {
-        if (serviceResources.isClosed || BluetoothConnectionManager.aacpSocket?.isConnected == true) return
-        // This method only runs off the main thread. Preserve MAC-before-handshake ordering,
-        // while a denied root prompt cannot delay foreground-service startup or block forever.
-        localMacLookupFinished.await(5500, TimeUnit.MILLISECONDS)
-        if (serviceResources.isClosed || !device.address.equals(macAddress, ignoreCase = true)) return
-        Log.d(TAG, "<LogCollector:Start> Connecting to socket")
-
-        val attempt = serviceResources.createChildScope()
+        val attempt = connection.resources
         var socket: BluetoothSocket? = null
         val pendingAttSocket = java.util.concurrent.atomic.AtomicReference<BluetoothSocket?>()
         var handedToReader = false
@@ -3042,11 +3063,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     if (notifyDisconnect && !serviceResources.isClosed) {
                         // Check ownership and clear shared state atomically with publication.
                         // A late old reader must never clear a replacement connection's state.
-                        aacpManager.disconnected()
-                        updateNotificationContent(false)
-                        sendBroadcast(Intent(AirPodsNotifications.AIRPODS_DISCONNECTED).apply {
-                            setPackage(packageName)
-                        })
+                        finishControlDisconnection()
                     }
                 }
                 if (pendingAttSocket.get() != null && BluetoothConnectionManager.attSocket === pendingAttSocket.get()) {
@@ -3060,7 +3077,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 BluetoothConnectionManager.aacpSocket === socket
 
         try {
-            serviceResources.track(attempt)
+            if (!connectionAttempts.isCurrent(connection) || BluetoothConnectionManager.aacpSocket?.isConnected == true) return
+            // Preserve MAC-before-handshake ordering without blocking the main thread.
+            localMacLookupFinished.await(5500, TimeUnit.MILLISECONDS)
+            if (!connectionAttempts.isCurrent(connection) || !device.address.equals(macAddress, ignoreCase = true)) return
+            attempt.ensureOpen()
+            Log.d(TAG, "<LogCollector:Start> Connecting to socket")
             timeoutJob = serviceScope.launch {
                 delay(5000)
                 if (connectionPhaseFinished.compareAndSet(false, true)) {
@@ -3083,8 +3105,10 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             attempt.ensureOpen()
 
             // Publish AACP without waiting for the optional hearing-feature channel.
-            serviceResources.whileOpen {
+            connectionAttempts.whileCurrent(connection) {
                 synchronized(BluetoothConnectionManager) {
+                    // BLE can expire while this publisher is waiting for the socket lock.
+                    if (!connectionAttempts.isCurrent(connection)) throw CancellationException("Connection request expired")
                     attempt.ensureOpen()
                     if (!device.address.equals(sharedPreferences.getString("mac_address", ""), ignoreCase = true)) throw CancellationException("Selected AirPods changed")
                     batteryNotification.invalidate()
@@ -3236,7 +3260,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 }
             }
         } catch (e: Exception) {
-            if (!serviceResources.isClosed && e !is CancellationException) {
+            if (connectionAttempts.isCurrent(connection) && e !is CancellationException) {
                 Log.d(TAG, "<LogCollector:Complete:Failed> Socket not connected, ${e.message}")
                 val reason = if (attempt.isClosed) "Bluetooth socket connection timed out" else e.localizedMessage
                 if (manual) sendToast("Couldn't connect to socket: $reason")
@@ -3245,8 +3269,22 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         } finally {
             connectionPhaseFinished.set(true)
             timeoutJob?.cancel()
-            if (!handedToReader) closeAttempt()
+            if (!handedToReader) closeAttempt(notifyDisconnect = true)
         }
+    }
+
+    /** Called by the retiring connection while holding the publication lock. */
+    private fun finishControlDisconnection() {
+        device = null
+        aacpManager.disconnected()
+        updateNotificationContent(false)
+        val retiredSession = aacpManager.captureDeviceSession()
+        serviceScope.launch(Dispatchers.Main.immediate) {
+            if (aacpManager.isCurrentDeviceSession(retiredSession) &&
+                BluetoothConnectionManager.aacpSocket?.isConnected != true) popupShown = false
+        }
+        // Observers need this notice; service state was already retired synchronously.
+        sendBroadcast(Intent(AirPodsNotifications.AIRPODS_DISCONNECTED).setPackage(packageName))
     }
 
     fun disconnectForCD() {
@@ -3273,6 +3311,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     fun disconnectAirPods() {
         if (serviceResources.isClosed || ServiceManager.getService() !== this) return
         revokeAudioRestore()
+        connectionAttempts.cancel()
         val retiredDevice: BluetoothDevice?
         val retiredSockets = synchronized(BluetoothConnectionManager) {
             val aacp = BluetoothConnectionManager.aacpSocket
@@ -3283,11 +3322,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             // A new publication after this lock is released must survive cleanup.
             BluetoothConnectionManager.aacpSocket = null
             BluetoothConnectionManager.attSocket = null
-            aacpManager.disconnected()
-            updateNotificationContent(false)
-            sendBroadcast(Intent(AirPodsNotifications.AIRPODS_DISCONNECTED).apply {
-                setPackage(packageName)
-            })
+            finishControlDisconnection()
             aacp to att
         }
         retiredSockets.second?.let { attManager.detachReader(it) }
@@ -3342,9 +3377,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             val att = BluetoothConnectionManager.attSocket
             BluetoothConnectionManager.aacpSocket = null
             BluetoothConnectionManager.attSocket = null
-            aacpManager.disconnected()
-            updateNotificationContent(false)
-            sendBroadcast(Intent(AirPodsNotifications.AIRPODS_DISCONNECTED).setPackage(packageName))
+            finishControlDisconnection()
             control to att
         }
         // Both sockets still belong to their tracked connection scope if cancellation
@@ -3384,23 +3417,39 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     }
 
     private fun withAudioProfile(
-        context: Context, requestedProfile: Int, purpose: AudioProfileAction, action: (BluetoothProfile) -> Unit
+        context: Context, requestedProfile: Int, purpose: AudioProfileAction,
+        onComplete: () -> Unit = {}, canEnqueue: () -> Boolean = { true }, action: (BluetoothProfile) -> Unit
     ) {
-        val offered = prepareAudioProfileRequest(requestedProfile, purpose, takeoverGeneration.get(), action) ?: return
+        val offered = prepareAudioProfileRequest(requestedProfile, purpose, takeoverGeneration.get(),
+            onComplete, canEnqueue, action) ?: return
         if (offered.acquire) acquireAudioProfile(context.applicationContext, offered.ticket)
     }
 
     private fun prepareAudioProfileRequest(
-        profile: Int, purpose: AudioProfileAction, generation: Long, action: (BluetoothProfile) -> Unit
-    ) = profileRequests.offer(profile, purpose, AudioProfileRequest(generation, action))
+        profile: Int, purpose: AudioProfileAction, generation: Long,
+        onComplete: () -> Unit = {}, canEnqueue: () -> Boolean = { true }, action: (BluetoothProfile) -> Unit
+    ) = profileRequests.offer(profile, purpose, AudioProfileRequest(generation, action, onComplete), canEnqueue)
 
     private fun acquireAudioProfile(context: Context, ticket: PendingProfileRequests.Ticket<Int>) {
         serviceScope.launch {
-            if (serviceResources.isClosed || !profileRequests.contains(ticket)) return@launch
-            val adapter = context.getSystemService(BluetoothManager::class.java).adapter
-            if (adapter == null) { profileRequests.rejected(ticket); return@launch }
-            val listener = createAudioProfileListener(adapter, ticket)
-            if (listener.shouldAcquire) beginAudioProfileAcquisition(context, adapter, listener)
+            try {
+                if (serviceResources.isClosed || !profileRequests.contains(ticket)) {
+                    profileRequests.rejected(ticket)
+                    return@launch
+                }
+                val adapter = context.getSystemService(BluetoothManager::class.java).adapter
+                if (adapter == null) { profileRequests.rejected(ticket); return@launch }
+                val listener = createAudioProfileListener(adapter, ticket)
+                if (listener.shouldAcquire) beginAudioProfileAcquisition(context, adapter, listener)
+            } catch (cancelled: CancellationException) {
+                throw cancelled
+            } catch (error: Exception) {
+                profileRequests.rejected(ticket)
+                Log.w(TAG, "Audio profile acquisition failed", error)
+            }
+        }.invokeOnCompletion { error ->
+            // A cancelled scope can prevent even the first line of the coroutine running.
+            if (error != null) profileRequests.rejected(ticket)
         }
     }
 
@@ -3463,6 +3512,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             onError = { Log.w(TAG, "Audio profile operation failed", it) },
             onFinished = {
                 try {
+                    // Also settles work cancelled before start, or after an earlier action.
+                    requests.forEach { it.complete() }
                     serviceResources.release(operation)
                     profileRequests.finished(ticket)?.let { acquireAudioProfile(applicationContext, it) }
                 } finally { completeAudioProfileAcquisition(context, adapter, acquisition) }
@@ -3473,12 +3524,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 for (request in requests) {
                     val current = { !serviceResources.isClosed && profileRequests.contains(ticket) &&
                         request.generation == takeoverGeneration.get() }
-                    if (!current()) continue
+                    if (!current()) { request.complete(); continue }
                     profileActionCurrent.set(current)
                     try { request.action(value) }
                     catch (cancelled: CancellationException) { throw cancelled }
                     catch (error: Exception) { Log.w(TAG, "Audio profile action failed", error) }
-                    finally { profileActionCurrent.remove() }
+                    finally { profileActionCurrent.remove(); request.complete() }
                 }
             }
         } catch (_: java.util.concurrent.CancellationException) {
@@ -3503,7 +3554,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         for (profile in ticket.profiles) {
             val permission = if (profile == BluetoothProfile.A2DP) "android.permission.BLUETOOTH_PRIVILEGED" else "android.permission.MODIFY_PHONE_STATE"
             if (checkSelfPermission(permission) != PackageManager.PERMISSION_GRANTED) continue
-            withAudioProfile(context, profile, AudioProfileAction.POLICY) { proxy ->
+            withAudioProfile(context, profile, AudioProfileAction.POLICY,
+                canEnqueue = { audioProfileOwnership.isCurrent(ticket) }) { proxy ->
                 audioProfileOwnership.withCurrent(ticket, profile, { audioOperationValid(target, ticket, socket) }) {
                     if (proxy.getConnectionState(target) == BluetoothProfile.STATE_CONNECTED &&
                         isCurrentProfileAction() && audioOperationValid(target, ticket, socket)) {
@@ -3521,7 +3573,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     fun connectAudio(context: Context, device: BluetoothDevice?) {
         val target = device ?: return
         val ticket = audioProfileOwnership.beginExplicitConnect(target.address)
-        serviceScope.launch(Dispatchers.Main.immediate) { clearStaleA2dpConnectionReceiver() }
         connectAudioProfiles(context, target, ticket, socket = null, playWhenConnected = false)
     }
 
@@ -3529,55 +3580,68 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         context: Context, target: BluetoothDevice, ticket: AudioProfileOwnership.Ticket,
         socket: BluetoothSocket?, playWhenConnected: Boolean, canConnect: () -> Boolean = { true }
     ) {
-        for (profile in ticket.profiles) {
-            val permission = if (profile == BluetoothProfile.A2DP) "android.permission.BLUETOOTH_PRIVILEGED" else "android.permission.MODIFY_PHONE_STATE"
-            val canSetPolicy = context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
-            if (profile == BluetoothProfile.HEADSET && !canSetPolicy) continue
-            withAudioProfile(context, profile, AudioProfileAction.POLICY) { proxy ->
-                var explicitMediaConnected = false
-                var enteredOperation = false
-                audioProfileOwnership.withCurrent(ticket, profile, { isCurrentProfileAction() && canConnect() && audioOperationValid(target, ticket, socket) }) operation@ {
-                    enteredOperation = true
-                    // Never undo a released policy after the permission needed to restore it was revoked.
-                    if (profile in ticket.releasedProfiles && !canSetPolicy) return@operation
-                    if (canSetPolicy) {
-                        val allowed = proxy.javaClass.getMethod("setConnectionPolicy", BluetoothDevice::class.java, Int::class.java)
-                            .invoke(proxy, target, 100) == true
-                        if (allowed) audioProfileOwnership.recordRestored(ticket, profile)
-                        else if (ticket.operation == AudioProfileOwnership.Operation.RESTORE) return@operation
-                    }
-                    if (!audioProfileOwnership.isCurrent(ticket) || !isCurrentProfileAction() || !canConnect() || !audioOperationValid(target, ticket, socket)) return@operation
-                    val receiver = if (playWhenConnected && profile == BluetoothProfile.A2DP && socket != null)
-                        registerA2dpConnectionReceiver(target, ticket, socket) else null
-                    try {
-                        val accepted = proxy.javaClass.getMethod("connect", BluetoothDevice::class.java).invoke(proxy, target) == true
-                        if (!audioProfileOwnership.isCurrent(ticket) || !isCurrentProfileAction() || !canConnect() || !audioOperationValid(target, ticket, socket)) {
-                            if (receiver != null) clearA2dpConnectionReceiver(receiver)
-                            return@operation
-                        }
-                        if (accepted) {
-                            if (profile !in ticket.releasedProfiles) audioProfileOwnership.recordRestored(ticket, profile)
-                            explicitMediaConnected = profile == BluetoothProfile.A2DP &&
-                                ticket.operation == AudioProfileOwnership.Operation.EXPLICIT_CONNECT
-                        } else if (receiver != null) clearA2dpConnectionReceiver(receiver)
-                    } catch (e: Exception) {
-                        if (receiver != null) clearA2dpConnectionReceiver(receiver)
-                        throw e
-                    }
+        audioConnectDeadline.start(ticket)
+        try {
+            if (ticket.operation == AudioProfileOwnership.Operation.EXPLICIT_CONNECT)
+                serviceScope.launch(Dispatchers.Main.immediate) { clearStaleA2dpConnectionReceiver() }
+            for (profile in ticket.profiles) {
+                val permission = if (profile == BluetoothProfile.A2DP) "android.permission.BLUETOOTH_PRIVILEGED" else "android.permission.MODIFY_PHONE_STATE"
+                val canSetPolicy = context.checkSelfPermission(permission) == PackageManager.PERMISSION_GRANTED
+                if (profile == BluetoothProfile.HEADSET && !canSetPolicy) {
+                    audioConnectDeadline.complete(ticket, profile)
+                    continue
                 }
-                // A returning wearer can queue behind a policy write that is later rejected.
-                // Resume an existing local profile without granting or attempting a connection.
-                if (!enteredOperation && playWhenConnected && profile == BluetoothProfile.A2DP &&
-                    ticket.operation == AudioProfileOwnership.Operation.RESTORE && audioProfileOwnership.isCurrent(ticket) &&
-                    isCurrentProfileAction() && canConnect() && audioOperationValid(target, ticket, socket) &&
-                    proxy.getConnectionState(target) == BluetoothProfile.STATE_CONNECTED &&
-                    audioProfileOwnership.isCurrent(ticket) && isCurrentProfileAction() && canConnect() &&
-                    audioOperationValid(target, ticket, socket)) MediaController.sendPlay()
-                // MediaController may call takeOver while holding its own lock. Keep its lock
-                // outside the profile policy transaction to avoid an inverse lock order.
-                if (explicitMediaConnected && isCurrentProfileAction() && audioProfileOwnership.isCurrent(ticket) && canConnect() &&
-                    !serviceResources.isClosed && MediaController.pausedWhileTakingOver) MediaController.sendPlay()
+                withAudioProfile(context, profile, AudioProfileAction.POLICY,
+                    onComplete = { audioConnectDeadline.complete(ticket, profile) },
+                    canEnqueue = { audioProfileOwnership.isCurrent(ticket) }) { proxy ->
+                    var explicitMediaConnected = false
+                    var enteredOperation = false
+                    audioProfileOwnership.withCurrent(ticket, profile, { isCurrentProfileAction() && canConnect() && audioOperationValid(target, ticket, socket) }) operation@ {
+                        enteredOperation = true
+                        // Never undo a released policy after the permission needed to restore it was revoked.
+                        if (profile in ticket.releasedProfiles && !canSetPolicy) return@operation
+                        if (canSetPolicy) {
+                            val allowed = proxy.javaClass.getMethod("setConnectionPolicy", BluetoothDevice::class.java, Int::class.java)
+                                .invoke(proxy, target, 100) == true
+                            if (allowed) audioProfileOwnership.recordRestored(ticket, profile)
+                            else if (ticket.operation == AudioProfileOwnership.Operation.RESTORE) return@operation
+                        }
+                        if (!audioProfileOwnership.isCurrent(ticket) || !isCurrentProfileAction() || !canConnect() || !audioOperationValid(target, ticket, socket)) return@operation
+                        val receiver = if (playWhenConnected && profile == BluetoothProfile.A2DP && socket != null)
+                            registerA2dpConnectionReceiver(target, ticket, socket) else null
+                        try {
+                            val accepted = proxy.javaClass.getMethod("connect", BluetoothDevice::class.java).invoke(proxy, target) == true
+                            if (!audioProfileOwnership.isCurrent(ticket) || !isCurrentProfileAction() || !canConnect() || !audioOperationValid(target, ticket, socket)) {
+                                if (receiver != null) clearA2dpConnectionReceiver(receiver)
+                                return@operation
+                            }
+                            if (accepted) {
+                                if (profile !in ticket.releasedProfiles) audioProfileOwnership.recordRestored(ticket, profile)
+                                explicitMediaConnected = profile == BluetoothProfile.A2DP &&
+                                    ticket.operation == AudioProfileOwnership.Operation.EXPLICIT_CONNECT
+                            } else if (receiver != null) clearA2dpConnectionReceiver(receiver)
+                        } catch (e: Exception) {
+                            if (receiver != null) clearA2dpConnectionReceiver(receiver)
+                            throw e
+                        }
+                    }
+                    // A returning wearer can queue behind a policy write that is later rejected.
+                    // Resume an existing local profile without granting or attempting a connection.
+                    if (!enteredOperation && playWhenConnected && profile == BluetoothProfile.A2DP &&
+                        ticket.operation == AudioProfileOwnership.Operation.RESTORE && audioProfileOwnership.isCurrent(ticket) &&
+                        isCurrentProfileAction() && canConnect() && audioOperationValid(target, ticket, socket) &&
+                        proxy.getConnectionState(target) == BluetoothProfile.STATE_CONNECTED &&
+                        audioProfileOwnership.isCurrent(ticket) && isCurrentProfileAction() && canConnect() &&
+                        audioOperationValid(target, ticket, socket)) MediaController.sendPlay()
+                    // MediaController may call takeOver while holding its own lock. Keep its lock
+                    // outside the profile policy transaction to avoid an inverse lock order.
+                    if (explicitMediaConnected && isCurrentProfileAction() && audioProfileOwnership.isCurrent(ticket) && canConnect() &&
+                        !serviceResources.isClosed && MediaController.pausedWhileTakingOver) MediaController.sendPlay()
+                }
             }
+        } catch (error: Exception) {
+            audioConnectDeadline.abandon(ticket)
+            throw error
         }
     }
 
@@ -3638,6 +3702,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         synchronized(renameBindingLock) { desiredRename = null; appliedRename = null }
         if (::batteryHistory.isInitialized) { batteryHistory.flush(); batteryHistory.close() }
         takeoverGeneration.incrementAndGet()
+        manualConnectionGeneration.incrementAndGet()
         audioProfileOwnership.revoke()
         cameraGeneration.incrementAndGet()
         cameraActive = false
@@ -3779,7 +3844,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         }?.alternate ?: preferred
         val request = HeadTrackingRequest(ticket, socket, aacpManager.captureDeviceSession(),
             headTrackingAttempts.incrementAndGet(), preferred, alternate, motionService = aacpManager.headTrackingService)
-        if (headTrackingRequestCurrent(request)) headTrackingCommands.offer(Unit, request)
+        headTrackingCommands.offerIf(Unit, request) { headTrackingRequestCurrent(request) }
     }
 
     private fun headTrackingRequestCurrent(request: HeadTrackingRequest): Boolean =
@@ -3790,7 +3855,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             request.ticket.peer != null && request.ticket.peer == me.kavishdevar.librepods.data.batteryHistoryIdentity(
                 sharedPreferences.getString("mac_address", "") ?: "") &&
             aacpManager.isCurrentDeviceSession(request.deviceSession) && isCurrentControlSocket(request.socket) &&
-            request.motionService == aacpManager.headTrackingService
+            // Discovery can replace a pending START, but must not discard its captured STOP.
+            (!request.ticket.enabled || request.motionService == aacpManager.headTrackingService)
 
     private fun writeHeadTrackingRequest(request: HeadTrackingRequest) {
         if (!headTrackingRequestCurrent(request)) return
@@ -3832,7 +3898,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                             Log.i(TAG, "No head tracking samples; trying the other start packet")
                             val retry = request.copy(attempt = headTrackingAttempts.incrementAndGet(),
                                 alternate = !request.alternate, retryOf = request.attempt)
-                            headTrackingCommands.offer(Unit, retry)
+                            headTrackingCommands.offerIf(Unit, retry) { headTrackingRequestCurrent(retry) }
                         } else if (headTrackingStatus.value == HeadTrackingStatus.UNAVAILABLE) {
                             Log.w(TAG, "Neither head tracking start packet produced sensor samples")
                         }
@@ -3849,10 +3915,20 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             it.address == macAddress
         }
         val targetDevice = device ?: return
-        serviceScope.launch {
-            Log.d(TAG, "connecting to $macAddress")
-            connectToSocket(bluetoothAdapter, targetDevice, manual = true)
-            if (isActive && !serviceResources.isClosed) connectAudio(this@AirPodsService, targetDevice)
+        val generation = manualConnectionGeneration.get()
+        val current = {
+            !serviceResources.isClosed && generation == manualConnectionGeneration.get() &&
+                targetDevice.address.equals(macAddress, ignoreCase = true)
+        }
+        Log.d(TAG, "connecting to $macAddress")
+        enqueueSocketConnection(bluetoothAdapter, targetDevice, manual = true, canConnect = current) {
+            // Preserve manual audio reconnect after a control-channel failure, while a
+            // disconnect or selection change revokes this delayed routing request.
+            if (!current()) return@enqueueSocketConnection
+            val ticket = audioProfileOwnership.beginExplicitConnectIfSelected(targetDevice.address, current)
+                ?: return@enqueueSocketConnection
+            connectAudioProfiles(this@AirPodsService, targetDevice, ticket, socket = null,
+                playWhenConnected = false, canConnect = current)
         }
     }
 }

@@ -1,0 +1,162 @@
+package me.kavishdevar.librepods.services.publication
+
+import java.io.Closeable
+import java.lang.management.ManagementFactory
+import java.util.concurrent.CancellationException
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
+import java.util.concurrent.locks.LockSupport
+import kotlin.concurrent.thread
+import me.kavishdevar.librepods.services.CloseableResourceScope
+import me.kavishdevar.librepods.services.ConnectionAttempts
+
+private const val PEER = "AA:BB:CC:DD:EE:FF"
+private class BluetoothDevice(val address: String = PEER)
+private class BluetoothSocket(val remoteDevice: BluetoothDevice = BluetoothDevice()) : Closeable {
+    override fun close() {}
+}
+private object BluetoothConnectionManager {
+    var aacpSocket: BluetoothSocket? = null
+    var attSocket: BluetoothSocket? = null
+}
+private class Preferences {
+    fun getString(key: String, default: String): String = if (key == "mac_address") PEER else default
+}
+private class BatteryNotification {
+    var invalidations = 0
+    fun invalidate() { invalidations++ }
+}
+private class AacpManager {
+    var sessions = 0L
+    fun beginDeviceSession(): Long = ++sessions
+}
+
+/** Only collaborators are substituted; the publication body is current production source. */
+private class AirPodsService : Closeable {
+    val serviceResources = CloseableResourceScope()
+    val connectionAttempts = ConnectionAttempts(serviceResources)
+    val sharedPreferences = Preferences()
+    val batteryNotification = BatteryNotification()
+    val aacpManager = AacpManager()
+    val originalControl = BluetoothSocket()
+    val originalAtt = BluetoothSocket()
+    val ownedControlSocket = AtomicReference<BluetoothSocket?>(originalControl)
+    val ownedAttSocket = AtomicReference<BluetoothSocket?>(originalAtt)
+    var device: BluetoothDevice? = null
+    private val presence = AtomicLong()
+    private val manualRequest = AtomicLong()
+
+    init {
+        BluetoothConnectionManager.aacpSocket = originalControl
+        BluetoothConnectionManager.attSocket = originalAtt
+    }
+
+    fun admit(automatic: Boolean): ConnectionAttempts.Attempt {
+        val source = if (automatic) presence else manualRequest
+        val generation = source.get()
+        return checkNotNull(connectionAttempts.begin { generation == source.get() })
+    }
+
+    // Controlled invalidation of an automatic request's source. The companion
+    // lifecycle harness separately executes the actual listener and expiry method.
+    fun expireAutomaticSource() { presence.incrementAndGet() }
+
+    fun publish(connection: ConnectionAttempts.Attempt, connectedSocket: BluetoothSocket): Long {
+        val attempt = connection.resources
+        val device = connectedSocket.remoteDevice
+        var packetGeneration = -1L
+@@PUBLICATION@@
+        return packetGeneration
+    }
+
+    fun assertUnpublished() {
+        check(BluetoothConnectionManager.aacpSocket === originalControl) { "Expired attempt replaced control socket" }
+        check(BluetoothConnectionManager.attSocket === originalAtt) { "Expired attempt cleared ATT socket" }
+        check(ownedControlSocket.get() === originalControl && ownedAttSocket.get() === originalAtt)
+        check(batteryNotification.invalidations == 0 && aacpManager.sessions == 0L && device == null) {
+            "Expired attempt changed notification, device, or packet-session state"
+        }
+    }
+
+    fun assertPublished(socket: BluetoothSocket) {
+        check(BluetoothConnectionManager.aacpSocket === socket && BluetoothConnectionManager.attSocket == null)
+        check(ownedControlSocket.get() === socket && ownedAttSocket.get() == null)
+        check(batteryNotification.invalidations == 1 && aacpManager.sessions == 1L && device === socket.remoteDevice)
+    }
+
+    override fun close() {
+        serviceResources.close()
+        BluetoothConnectionManager.aacpSocket = null
+        BluetoothConnectionManager.attSocket = null
+    }
+}
+
+private fun awaitSocketMonitor(worker: Thread) {
+    val threads = ManagementFactory.getThreadMXBean()
+    val deadline = System.nanoTime() + TimeUnit.SECONDS.toNanos(5)
+    val monitor = System.identityHashCode(BluetoothConnectionManager)
+    while (System.nanoTime() < deadline) {
+        val info = threads.getThreadInfo(worker.id)
+        if (info?.threadState == Thread.State.BLOCKED &&
+            info.lockInfo?.identityHashCode == monitor && info.lockOwnerId == Thread.currentThread().id) return
+        check(worker.isAlive) { "Publisher finished before reaching the socket monitor" }
+        LockSupport.parkNanos(TimeUnit.MILLISECONDS.toNanos(1))
+    }
+    error("Publisher never waited for the socket monitor after its outer validity check")
+}
+
+private fun publishAcrossExpiry(automatic: Boolean) {
+    AirPodsService().use { service ->
+        val connection = service.admit(automatic)
+        val socket = connection.resources.track(BluetoothSocket())
+        val failure = AtomicReference<Throwable?>()
+        val finished = CountDownLatch(1)
+        val worker = thread(start = false, isDaemon = true, name = "BLE-publication-regression") {
+            try { service.publish(connection, socket) }
+            catch (error: Throwable) { failure.set(error) }
+            finally { finished.countDown() }
+        }
+        synchronized(BluetoothConnectionManager) {
+            worker.start()
+            // Observed contention proves whileCurrent's outer guard already passed.
+            awaitSocketMonitor(worker)
+            service.expireAutomaticSource()
+        }
+        check(finished.await(5, TimeUnit.SECONDS)) { "Publisher did not finish after the socket monitor was released" }
+        if (automatic) {
+            check(failure.get() is CancellationException) { "Expired automatic attempt published: ${failure.get()}" }
+            service.assertUnpublished()
+        } else {
+            check(failure.get() == null) { "BLE expiry rejected manual publication: ${failure.get()}" }
+            service.assertPublished(socket)
+        }
+        service.connectionAttempts.finish(connection)
+    }
+}
+
+fun runPublicationRaceRegressions() {
+    AirPodsService().use { service ->
+        val connection = service.admit(automatic = true)
+        val socket = connection.resources.track(BluetoothSocket())
+        check(service.publish(connection, socket) == 1L)
+        service.assertPublished(socket)
+        service.connectionAttempts.finish(connection)
+    }
+    println("PASS current automatic source publishes the connected socket")
+    AirPodsService().use { service ->
+        val connection = service.admit(automatic = true)
+        val socket = connection.resources.track(BluetoothSocket())
+        service.expireAutomaticSource()
+        val failure = runCatching { service.publish(connection, socket) }.exceptionOrNull()
+        check(failure is CancellationException) { "Already expired source passed the outer publication check" }
+        service.assertUnpublished()
+        service.connectionAttempts.finish(connection)
+    }
+    println("PASS expiry before publication rejects the automatic source")
+    publishAcrossExpiry(automatic = true)
+    println("PASS expiry while waiting for the socket monitor rejects automatic publication")
+    publishAcrossExpiry(automatic = false)
+    println("PASS expiry while waiting for the socket monitor preserves manual publication")
+}

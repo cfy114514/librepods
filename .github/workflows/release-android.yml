@@ -99,11 +99,14 @@ jobs:
           apk.rename(destination / name)
           (destination / 'SHA256SUMS.txt').write_text(f'{digest}  {name}\n')
           (destination / 'notes.txt').write_text(
-              '界面圆角调整与头部追踪性能优化。\n\n'
-              '- 页面外边缘交由 Android 系统处理，移除固定 52dp 的整页圆角裁剪与外框阴影。\n'
-              '- Apple 风格设置卡片统一使用 16dp 圆角；电量历史和实时翻译入口合并为同一分组。\n'
-              '- 运动包只解析一次，姿态与手势处理共享结果，保留原有轴映射、校准和识别阈值。\n\n'
+              '蓝牙连接与音频请求生命周期稳定性修复。\n\n'
+              '- 连接取消、ATT 读取结束和服务关闭按请求归属清理资源，避免迟到回调影响后续连接。\n'
+              '- 手动音频请求保留优先权；完成、拒绝、取消或十秒超时后结束本次尝试，不自动无限重试。\n'
+              '- BLE 隐私地址轮换按同一设备处理状态变化，过滤过期和乱序广播，并恢复超时后的盒盖状态变化。\n'
+              '- 头部追踪预览随页面生命周期释放；服务发现不会丢失待发送的停止指令。\n'
+              '- 均衡器回读保留通话和媒体标记。\n\n'
               '使用原包名与正式发布证书；源构建的单元测试、Lint、Debug/Release 构建全部通过。\n\n'
+              '未进行真实 AirPods 设备验证；十秒期限结束的是应用侧连接尝试，不代表设备已物理连接。\n\n'
               f"构建记录：https://github.com/{os.environ['GITHUB_REPOSITORY']}/actions/runs/{os.environ['BUILD_RUN_ID']}\n"
           )
           print(package)
@@ -120,5 +123,5 @@ jobs:
           set -euo pipefail
           gh release create "$RELEASE_TAG" release-output/*.apk release-output/SHA256SUMS.txt \
             --repo "$GITHUB_REPOSITORY" --target "$SOURCE_SHA" --latest \
-            --title "LibrePods $RELEASE_TAG — 圆角调整与头部追踪优化" \
+            --title "LibrePods $RELEASE_TAG — 蓝牙连接与音频生命周期修复" \
             --notes-file release-output/notes.txt

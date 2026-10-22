@@ -1,0 +1,43 @@
+package me.kavishdevar.librepods.bluetooth
+
+import me.kavishdevar.librepods.services.BluetoothSocket
+
+// Session storage and transport are JVM substitutes. The dispatcher and packet builders
+// below are taken from the selected production source on every run.
+internal class AACPManager {
+    companion object {
+@@HEADER@@
+    }
+    object Opcodes { const val HEADTRACKING: Byte = 0x17 }
+    interface PacketCallback {
+        fun onHeadTrackingServiceDiscovered()
+        fun onHeadTrackingReceived(motion: HeadTrackingMotion) {}
+    }
+    var callback: PacketCallback? = null
+    var headTrackingService: Int? = null
+    var generation = 1L
+    var beforeSend: (() -> Unit)? = null
+    val writes = mutableListOf<ByteArray>()
+    val sendGuards = mutableListOf<Boolean>()
+    fun captureDeviceSession() = generation
+    fun isCurrentDeviceSession(value: Long) = value == generation
+    private fun updateDeviceState(current: () -> Boolean, action: () -> Unit): Boolean {
+        if (!current()) return false
+        action()
+        return true
+    }
+    fun sendPacket(packet: ByteArray, socket: BluetoothSocket, canSend: () -> Boolean): Boolean {
+        beforeSend?.also { beforeSend = null }?.invoke()
+        val allowed = canSend()
+        sendGuards.add(allowed)
+        if (allowed) writes.add(packet.copyOf())
+        return allowed
+    }
+    fun receivePacket(packet: ByteArray, generation: Long = this.generation, canReceive: () -> Boolean = { true }) {
+        val current = { isCurrentDeviceSession(generation) && canReceive() }
+        if (!current()) return
+@@RECEIVE@@
+    }
+@@DATA_PACKET@@
+@@PACKETS@@
+}

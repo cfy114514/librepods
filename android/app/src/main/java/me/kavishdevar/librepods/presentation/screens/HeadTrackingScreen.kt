@@ -103,8 +103,9 @@ import kotlin.io.encoding.ExperimentalEncodingApi
 @Composable
 fun HeadTrackingScreen(viewModel: AirPodsViewModel, navigateToPurchase: () -> Unit) {
     val state by viewModel.uiState.collectAsState()
-    DisposableEffect(viewModel) {
-        val preview = viewModel.beginHeadTrackingPreview()
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(viewModel, lifecycleOwner) {
+        val preview = viewModel.beginHeadTrackingPreview(lifecycleOwner.lifecycle)
         onDispose { preview.close() }
     }
     val isDarkTheme = isSystemInDarkTheme()

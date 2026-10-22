@@ -1,0 +1,298 @@
+package me.kavishdevar.librepods.services
+
+import java.util.concurrent.CancellationException
+import java.util.concurrent.atomic.AtomicBoolean
+import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
+
+private const val TAG = "DisconnectRegression"
+private const val RECEIVER_EXPORTED = 2
+private object Build { object VERSION { var SDK_INT = 33 }; object VERSION_CODES { const val TIRAMISU = 33 } }
+private const val PEER = "AA:BB:CC:DD:EE:FF"
+private object Log { fun d(tag: String, message: String) = Unit; fun w(tag: String, message: String, error: Exception) = Unit }
+private class Context
+private class BluetoothDevice(val address: String)
+private class Socket(val isConnected: Boolean)
+private object BluetoothConnectionManager { var aacpSocket: Socket? = null; var attSocket: Socket? = null }
+private object AirPodsNotifications {
+    const val AIRPODS_CONNECTION_DETECTED = "detected"
+    const val AIRPODS_DISCONNECTED = "disconnected"
+}
+private class Intent(val action: String) {
+    fun setPackage(name: String) = this
+    fun <T> getParcelableExtra(name: String, type: Class<T>): T? = null
+}
+private class IntentFilter {
+    private val actions = mutableSetOf<String>()
+    fun addAction(action: String) { actions += action }
+    fun accepts(intent: Intent) = intent.action in actions
+}
+private abstract class BroadcastReceiver { abstract fun onReceive(context: Context?, intent: Intent?) }
+private object Dispatchers { object Main { val immediate = Any() } }
+private class MainQueue {
+    var onMain = true
+    private val pending = ArrayDeque<() -> Unit>()
+    fun launch(dispatcher: Any, action: () -> Unit) { if (onMain) action() else pending.addLast(action) }
+    fun onIo(action: () -> Unit) { val before = onMain; onMain = false; try { action() } finally { onMain = before } }
+    fun drain() { check(onMain); while (pending.isNotEmpty()) pending.removeFirst().invoke() }
+}
+private class ResourceState { var isClosed = false }
+private class AacpState {
+    private var session = 0L
+    var resets = 0
+    fun disconnected() { session++; resets++ }
+    fun beginDeviceSession() { session++ }
+    fun captureDeviceSession() = session
+    fun isCurrentDeviceSession(value: Long) = value == session
+}
+private class Preferences { fun getBoolean(key: String, fallback: Boolean) = true }
+private object Settings { fun canDrawOverlays(service: Service) = true }
+private class Model(val connectionArtworkRes: Int? = null)
+private class Instance(val model: Model)
+private class PopupWindow(context: Any) {
+    fun close() = Unit
+    fun open(name: String, battery: Any, artwork: Int?) { onOpen?.invoke() }
+    companion object { var onOpen: (() -> Unit)? = null }
+}
+private typealias Service = AirPodsService
+private class Profile(val id: Int) { var connections = 0 }
+private typealias BluetoothProfile = Profile
+private class Watch(val ticket: AudioProfileOwnership.Ticket, val receiver: BroadcastReceiver? = null) {
+    var closes = 0
+    fun close() { closes++ }
+}
+
+private class AirPodsService {
+    private enum class Purpose { POLICY }
+@@REQUEST@@
+    val serviceResources = ResourceState()
+    val serviceScope = MainQueue()
+    val aacpManager = AacpState()
+    val audioProfileOwnership = AudioProfileOwnership(setOf(1, 2)).apply { select(PEER) }
+    val takeoverGeneration = AtomicLong()
+    val manualConnectionGeneration = AtomicLong()
+    private val profileRequests = PendingProfileRequests<Int, Purpose, AudioProfileRequest>(setOf(1, 2), setOf(Purpose.POLICY))
+    private val profileActionCurrent = ThreadLocal<() -> Boolean>()
+    private val a2dpWatch = AtomicReference<Watch?>()
+    private lateinit var connectionReceiver: BroadcastReceiver
+    private lateinit var installedFilter: IntentFilter
+    private val bluetoothReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) = Unit
+    }
+    private val serviceIntentFilter = IntentFilter()
+    private var connectionRegistrations = 0
+    private var connectionFlags: Int? = null
+    private val broadcasts = ArrayDeque<Intent>()
+    val profiles = listOf(Profile(1), Profile(2))
+    var device: BluetoothDevice? = BluetoothDevice(PEER)
+    var observerNotices = 0
+    var notificationResets = 0
+    var popupShown = false
+        set(value) { check(serviceScope.onMain) { "Popup state was mutated outside Main" }; field = value }
+    private var popupWindow: PopupWindow? = null
+    val applicationContext = Any()
+    val batteryNotification = Any()
+    val airpodsInstance: Instance? = null
+    val sharedPreferences = Preferences()
+    val packageName = "regression"
+
+    init {
+@@RECEIVER@@
+@@FILTER@@
+@@REGISTRATION@@
+    }
+
+    private fun registerReceiver(receiver: BroadcastReceiver, filter: IntentFilter, flags: Int? = null) {
+        if (receiver === connectionReceiver) {
+            installedFilter = filter
+            connectionRegistrations++
+            connectionFlags = flags
+        }
+    }
+
+    fun verifyRegistration() {
+        check(connectionRegistrations == 1)
+        check(connectionFlags == if (Build.VERSION.SDK_INT >= 33) RECEIVER_EXPORTED else null)
+        check(installedFilter.accepts(Intent(AirPodsNotifications.AIRPODS_CONNECTION_DETECTED)))
+    }
+
+    private fun attachControlIfAudioConnected(device: BluetoothDevice) = Unit
+    private fun resetConversation() = Unit
+    private fun isCurrentProfileAction() = profileActionCurrent.get()?.invoke() != false
+    private fun sendBroadcast(intent: Intent) { broadcasts.addLast(intent) }
+
+    // Android/notification collaborators are replaced; the service's receiver,
+    // filter, sender, popup path, watch guards and profile dispatch loop are actual source.
+    private fun updateNotificationContent(connected: Boolean) {
+        check(!connected)
+        notificationResets++
+        takeoverGeneration.incrementAndGet()
+        audioProfileOwnership.socketClosed()
+        serviceScope.launch(Dispatchers.Main.immediate) { clearStaleA2dpConnectionReceiver() }
+    }
+
+    fun sourceDisconnect() {
+        BluetoothConnectionManager.aacpSocket = null
+        val notifyDisconnect = true
+@@SENDER@@
+    }
+
+@@FINISH@@
+@@WATCH@@
+@@POPUP@@
+@@REVOKE@@
+
+    fun deliverBroadcasts() {
+        check(serviceScope.onMain)
+        while (broadcasts.isNotEmpty()) {
+            val intent = broadcasts.removeFirst()
+            observerNotices++
+            if (installedFilter.accepts(intent)) connectionReceiver.onReceive(Context(), intent)
+        }
+    }
+
+    fun queueManual(): Pair<AudioProfileOwnership.Ticket, List<PendingProfileRequests.Ticket<Int>>> {
+        device = BluetoothDevice(PEER)
+        val selection = audioProfileOwnership.captureSelection(PEER)!!
+        val ticket = audioProfileOwnership.beginExplicitConnectIfCurrent(selection)!!
+        val pending = profiles.map { profile ->
+            profileRequests.offer(profile.id, Purpose.POLICY, AudioProfileRequest(takeoverGeneration.get(), action = { value ->
+                audioProfileOwnership.withCurrent(ticket, value.id, ::isCurrentProfileAction) { value.connections++ }
+            }))!!.ticket
+        }
+        return ticket to pending
+    }
+
+    fun dispatch(tickets: List<PendingProfileRequests.Ticket<Int>>) {
+        for (ticket in tickets) {
+            val requests = profileRequests.take(ticket)!!
+            val value = profiles.first { it.id == ticket.profile }
+@@DISPATCH@@
+            profileRequests.finished(ticket)
+        }
+    }
+
+    fun publishReplacement() { aacpManager.beginDeviceSession(); BluetoothConnectionManager.aacpSocket = Socket(true) }
+    fun installWatch(ticket: AudioProfileOwnership.Ticket) = Watch(ticket).also { a2dpWatch.set(it) }
+    fun currentWatch() = a2dpWatch.get()
+}
+
+fun main() {
+    var failures = 0
+    var total = 0
+    fun scenario(name: String, sdk: Int = 33, body: (AirPodsService) -> Unit) {
+        total++
+        Build.VERSION.SDK_INT = sdk
+        BluetoothConnectionManager.aacpSocket = null
+        BluetoothConnectionManager.attSocket = null
+        PopupWindow.onOpen = null
+        try { body(AirPodsService()); println("PASS $name") }
+        catch (failure: Throwable) { failures++; println("FAIL $name: ${failure.message}") }
+        finally { PopupWindow.onOpen = null }
+    }
+
+    scenario("actual API 33 receiver registration keeps the detected-device subscription", sdk = 33) {
+        it.verifyRegistration()
+    }
+    scenario("actual API 32 receiver registration keeps the detected-device subscription", sdk = 32) {
+        it.verifyRegistration()
+    }
+    scenario("retirement revokes old audio work and closes its stale watcher") { service ->
+        val (ticket, requests) = service.queueManual()
+        val oldWatch = service.installWatch(ticket)
+        service.serviceScope.onIo { service.sourceDisconnect() }
+        check(service.notificationResets == 1 && service.aacpManager.resets == 1)
+        check(!service.audioProfileOwnership.isCurrent(ticket))
+        service.serviceScope.drain()
+        check(service.currentWatch() == null && oldWatch.closes == 1)
+        service.dispatch(requests)
+        check(service.profiles.sumOf { it.connections } == 0)
+    }
+    scenario("delayed observer notification preserves queued manual ownership") { service ->
+        service.serviceScope.onIo { service.sourceDisconnect() }
+        val (ticket, _) = service.queueManual()
+        service.serviceScope.drain()
+        service.deliverBroadcasts()
+        check(service.observerNotices == 1)
+        check(service.audioProfileOwnership.isCurrent(ticket)) { "Self notification revoked newer audio ownership" }
+        check(service.aacpManager.resets == 1) { "One retirement reset AACP more than once" }
+    }
+    scenario("actual profile-dispatch loop accepts work newer than disconnect") { service ->
+        service.serviceScope.onIo { service.sourceDisconnect() }
+        val (_, requests) = service.queueManual()
+        service.serviceScope.drain()
+        service.deliverBroadcasts()
+        service.dispatch(requests)
+        check(service.profiles.sumOf { it.connections } == 2) { "Late notification rejected pending audio requests" }
+    }
+    scenario("delayed notification cannot clear a newer manual target") { service ->
+        service.serviceScope.onIo { service.sourceDisconnect() }
+        service.queueManual()
+        val target = service.device
+        service.serviceScope.drain()
+        service.deliverBroadcasts()
+        check(service.device === target) { "Late notification cleared a newer device selection" }
+    }
+    scenario("healthy replacement remains protected") { service ->
+        service.serviceScope.onIo { service.sourceDisconnect() }
+        service.publishReplacement()
+        val (ticket, requests) = service.queueManual()
+        service.serviceScope.drain()
+        service.deliverBroadcasts()
+        service.dispatch(requests)
+        check(service.audioProfileOwnership.isCurrent(ticket))
+        check(service.profiles.sumOf { it.connections } == 2)
+    }
+    scenario("manual request begun after delivery remains valid") { service ->
+        service.sourceDisconnect()
+        service.deliverBroadcasts()
+        val (_, requests) = service.queueManual()
+        service.dispatch(requests)
+        check(service.profiles.sumOf { it.connections } == 2)
+    }
+    scenario("real user revocation still suppresses queued audio") { service ->
+        service.sourceDisconnect()
+        val (_, requests) = service.queueManual()
+        service.revokeAudioRestore()
+        service.deliverBroadcasts()
+        service.dispatch(requests)
+        check(service.profiles.sumOf { it.connections } == 0)
+    }
+    scenario("delayed stale-watch cleanup preserves a new current watcher") { service ->
+        val oldTicket = service.queueManual().first
+        val oldWatch = service.installWatch(oldTicket)
+        service.serviceScope.onIo { service.sourceDisconnect() }
+        service.publishReplacement()
+        val newWatch = service.installWatch(service.queueManual().first)
+        service.serviceScope.drain()
+        service.deliverBroadcasts()
+        check(service.currentWatch() === newWatch && newWatch.closes == 0)
+        check(oldWatch.closes == 0) // Registration replacement itself is outside this harness.
+    }
+    scenario("popup opened during IO retirement is reset on Main afterwards") { service ->
+        PopupWindow.onOpen = { service.serviceScope.onIo { service.sourceDisconnect() } }
+        service.showPopup(service, "AirPods")
+        check(service.popupShown)
+        service.serviceScope.drain()
+        service.deliverBroadcasts()
+        check(!service.popupShown) { "IO retirement was overwritten by the main-thread popup completion" }
+    }
+    scenario("old popup reset cannot clear a replacement connection's popup") { service ->
+        service.serviceScope.onIo { service.sourceDisconnect() }
+        service.publishReplacement()
+        service.showPopup(service, "AirPods")
+        service.serviceScope.drain()
+        service.deliverBroadcasts()
+        check(service.popupShown)
+    }
+    scenario("old popup reset cannot cross a newer unpublished session") { service ->
+        service.serviceScope.onIo { service.sourceDisconnect() }
+        // Publication begins the AACP session before storing the global socket.
+        service.aacpManager.beginDeviceSession()
+        service.showPopup(service, "AirPods")
+        service.serviceScope.drain()
+        check(service.popupShown) { "Old retirement reset a newer session's popup before publication" }
+    }
+    println("RESULT $total scenarios, $failures failures")
+    check(failures == 0)
+}

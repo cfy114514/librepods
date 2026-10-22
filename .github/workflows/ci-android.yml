@@ -21,7 +21,7 @@ on:
         default: main
   workflow_call:
 
-# This fork validates debug builds without upstream release keys or publishing.
+# Build and validate APKs with optional existing signing, without publishing a release.
 permissions:
   contents: read
 
@@ -38,7 +38,7 @@ jobs:
         with:
           submodules: true
           persist-credentials: false
-          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.branch || github.ref }}
+          ref: ${{ github.event_name == 'workflow_dispatch' && github.event.inputs.branch || github.sha }}
 
       - uses: actions/setup-java@v4
         with:
@@ -117,7 +117,7 @@ jobs:
           ./gradlew --no-daemon --stacktrace assembleFossRelease \
             2>&1 | tee build/ci-release.log
 
-      - name: Run JVM unit tests
+      - name: Run JVM and lifecycle regression tests
         id: tests
         if: ${{ !cancelled() && steps.apk.outcome == 'success' }}
         working-directory: android
@@ -126,6 +126,16 @@ jobs:
           set -euo pipefail
           ./gradlew --no-daemon --stacktrace testFossDebugUnitTest \
             2>&1 | tee build/ci-tests.log
+          python3 tests/att-reader-lifecycle/run.py \
+            2>&1 | tee build/ci-att-reader.log
+          python3 tests/head-tracking-stop-discovery/run.py \
+            2>&1 | tee build/ci-head-tracking-stop.log
+          python3 tests/disconnect-notification/run.py \
+            2>&1 | tee build/ci-disconnect-notification.log
+          python3 tests/ble-presence-lifecycle/run.py \
+            2>&1 | tee build/ci-ble-presence.log
+          python3 tests/ble-scan-ordering/run.py \
+            2>&1 | tee build/ci-ble-scan-ordering.log
 
       - name: Run Android Lint
         id: lint
@@ -192,6 +202,9 @@ jobs:
         env:
           SDK_OUTCOME: ${{ steps.sdk.outcome }}
           APK_OUTCOME: ${{ steps.apk.outcome }}
+          SIGNING_OUTCOME: ${{ steps.signing.outcome }}
+          SIGNING_AVAILABLE: ${{ steps.signing.outputs.available }}
+          RELEASE_OUTCOME: ${{ steps.release.outcome }}
           TEST_OUTCOME: ${{ steps.tests.outcome }}
           LINT_OUTCOME: ${{ steps.lint.outcome }}
         shell: bash
@@ -201,12 +214,13 @@ jobs:
             echo "SDK installation: ${SDK_OUTCOME}"
             echo "APK build: ${APK_OUTCOME}"
             echo "Release signing setup: ${SIGNING_OUTCOME}"
+            echo "Existing release signing configured: ${SIGNING_AVAILABLE}"
             echo "Signed Release APK: ${RELEASE_OUTCOME}"
-            echo "JVM unit tests: ${TEST_OUTCOME}"
+            echo "JVM and lifecycle regression tests: ${TEST_OUTCOME}"
             echo "Android Lint: ${LINT_OUTCOME}"
             echo "Checked-out commit: $(git rev-parse HEAD)"
             echo 'All three verification steps are required; no errors are ignored.'
-            echo 'Artifacts, when produced: debug APK with SHA-256, unit test reports, lint reports, SDK installation logs, and Gradle logs.'
-            echo 'No release signing keys are used. No release or Discord notification is published.'
+            echo 'Artifacts, when produced: debug and signed release APKs with SHA-256, unit test reports, lint reports, SDK installation logs, and Gradle logs.'
+            echo 'Existing signing secrets are used only when configured. No release or Discord notification is published by this build workflow.'
             echo 'CI does not validate AirPods 5 Bluetooth behavior on real hardware.'
           } >> "$GITHUB_STEP_SUMMARY"
