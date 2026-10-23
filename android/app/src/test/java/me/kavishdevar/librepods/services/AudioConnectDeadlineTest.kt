@@ -45,10 +45,13 @@ class AudioConnectDeadlineTest {
         fun advanceTo(time: Long) { runCurrent(); queueDueAt(time); runCurrent() }
     }
 
-    private fun fixture(test: (AudioProfileOwnership, AudioConnectDeadline, Scheduler, CoroutineScope) -> Unit) {
+    private fun fixture(
+        profiles: Set<Int> = setOf(a2dp, headset),
+        test: (AudioProfileOwnership, AudioConnectDeadline, Scheduler, CoroutineScope) -> Unit
+    ) {
         val scheduler = Scheduler()
         val scope = CoroutineScope(SupervisorJob() + scheduler)
-        val owner = AudioProfileOwnership(setOf(a2dp, headset)).apply { select(peer) }
+        val owner = AudioProfileOwnership(profiles).apply { select(peer) }
         val deadline = AudioConnectDeadline(owner, scope)
         try { test(owner, deadline, scheduler, scope) }
         finally { deadline.close(); scope.cancel(); scheduler.runCurrent() }
@@ -174,4 +177,71 @@ class AudioConnectDeadlineTest {
         assertTrue(owner.isCurrent(restore))
         assertEquals(0, time.pendingDelays)
     }
+
+    @Test fun repeatedTimeoutsReuseOneRegistrationAndDeliverOnlyFreshRetry() =
+        assertBoundedMissingCallback(deliverToFreshRetry = true)
+
+    @Test fun repeatedTimeoutsDiscardLateDeliveryAndPermitFreshAcquisition() =
+        assertBoundedMissingCallback(deliverToFreshRetry = false)
+
+    /** Helper composition only: an accepted registration deliberately never supplies its callback. */
+    private fun assertBoundedMissingCallback(deliverToFreshRetry: Boolean) =
+        fixture(setOf(a2dp)) { owner, deadline, time, _ ->
+            val requests = PendingProfileRequests<Int, String, AudioProfileOwnership.Ticket>(
+                setOf(a2dp), setOf("POLICY"), { deadline.complete(it, a2dp) }
+            )
+            val acquisitions = PendingAcquisitions<Int, PendingProfileRequests.Ticket<Int>>(setOf(a2dp))
+            var registration: PendingAcquisitions.Ticket<Int>? = null
+            var registrations = 0
+            fun request(): AudioProfileOwnership.Ticket {
+                val ticket = owner.beginExplicitConnect(peer)
+                deadline.start(ticket)
+                val offered = requests.offer(a2dp, "POLICY", ticket) { owner.isCurrent(ticket) }!!
+                if (offered.acquire) {
+                    val acquired = acquisitions.offer(a2dp, offered.ticket) { requests.contains(offered.ticket) }!!
+                    assertTrue(acquired.acquire)
+                    assertTrue(acquisitions.start(acquired.ticket) { requests.contains(it) }.ready)
+                    registration = acquired.ticket
+                    registrations++
+                }
+                time.runCurrent()
+                assertEquals(1, time.pendingDelays)
+                return ticket
+            }
+            try {
+                repeat(100) {
+                    val expired = request()
+                    time.advanceTo(time.now + 10_000)
+                    assertFalse(owner.isCurrent(expired))
+                    assertEquals(0, time.pendingDelays)
+                    assertEquals(1, registrations)
+                }
+                time.advanceTo(time.now + 1_000_000)
+                assertEquals(1, registrations)
+                assertEquals(0, time.pendingDelays)
+                val current = if (deliverToFreshRetry) request() else null
+                assertEquals(1, registrations)
+                val deliveredRegistration = registration!!
+                val recipient = acquisitions.take(deliveredRegistration)!!
+                val delivered = requests.take(recipient)!!
+                assertEquals(1, delivered.size)
+                val actions = mutableListOf<AudioProfileOwnership.Ticket>()
+                delivered.forEach { ticket ->
+                    owner.withCurrent(ticket, a2dp) { actions.add(ticket) }
+                }
+                assertEquals(if (current == null) emptyList() else listOf(current), actions)
+                delivered.forEach { deadline.complete(it, a2dp) }
+                // The caller reports completion only after closing its delivered proxy.
+                assertNull(requests.finished(recipient))
+                assertNull(acquisitions.finished(deliveredRegistration))
+                assertNull(acquisitions.take(deliveredRegistration))
+                assertEquals(0, time.pendingDelays)
+                current?.let { assertFalse(owner.isCurrent(it)) }
+                val next = request()
+                assertEquals(2, registrations)
+                assertTrue(owner.isCurrent(next))
+            } finally {
+                requests.close()
+            }
+        }
 }
