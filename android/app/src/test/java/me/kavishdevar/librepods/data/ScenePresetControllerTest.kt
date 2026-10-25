@@ -161,6 +161,21 @@ class ScenePresetControllerTest {
         assertFalse(controller.isCurrent(old))
     }
 
+    @Test fun temporaryContextLossAndReselectionDoNotPretendTheTransportReconnected() {
+        listOf(context, context.copy(selection = 2)).forEach { restored ->
+            val controller = controller()
+            val first = controller.begin(context, plan(mode)).single()
+            controller.send(first)
+            controller.setContext(null)
+            controller.setContext(restored)
+            val retry = controller.begin(restored, plan(mode)).single()
+            controller.send(retry, 20)
+            controller.received(restored, mode.setting, mode.value, 21)
+            assertEquals(SceneSettingStatus.UNCONFIRMED, controller.result().status)
+            assertEquals(SceneResultDetail.EARLIER_REQUEST_UNRESOLVED, controller.result().detail)
+        }
+    }
+
     @Test fun repeatedApplyNeverReusesThePreviousObservedValue() {
         val controller = controller()
         val first = controller.begin(context, plan(mode)).single()

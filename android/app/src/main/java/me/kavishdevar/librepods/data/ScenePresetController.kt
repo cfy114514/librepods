@@ -38,6 +38,8 @@ internal class ScenePresetController {
         var result = SceneSettingResult(command.target, SceneSettingStatus.WAITING, SceneResultDetail.QUEUED)
     }
     private var context: SceneContext? = null
+    private data class TransportOwner(val peer: String, val binding: Long, val deviceSession: Long)
+    private var unresolvedOwner: TransportOwner? = null
     private var attempt = 0L
     private var preset: ScenePresetId? = null
     private val entries = linkedMapOf<SceneSetting, Entry>()
@@ -51,7 +53,13 @@ internal class ScenePresetController {
         entries.values.filter { it.active }.forEach { finishUncertain(it, SceneResultDetail.CONNECTION_CHANGED) }
         if (entries.isNotEmpty()) connectionChanged = true
         context = next
-        unresolved.clear()
+        // A temporarily unavailable selection/permission is not proof of a new connection.
+        // Returning to the same live transport must retain ambiguity from earlier writes.
+        if (next != null) {
+            val owner = TransportOwner(next.peer, next.binding, next.deviceSession)
+            if (owner != unresolvedOwner) unresolved.clear()
+            unresolvedOwner = owner
+        }
         publish()
     }
 
