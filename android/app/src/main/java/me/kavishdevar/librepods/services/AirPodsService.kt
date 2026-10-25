@@ -113,6 +113,9 @@ import me.kavishdevar.librepods.data.CustomEq
 import me.kavishdevar.librepods.data.StemAction
 import me.kavishdevar.librepods.data.StemShortcutSide
 import me.kavishdevar.librepods.data.StemShortcutPress
+import me.kavishdevar.librepods.data.StemShortcutEventGuard
+import me.kavishdevar.librepods.data.readStemShortcutBinding
+import me.kavishdevar.librepods.data.stemString
 import me.kavishdevar.librepods.shortcuts.StemShortcutDispatcher
 import me.kavishdevar.librepods.data.XposedRemotePrefProvider
 import me.kavishdevar.librepods.data.AirPodsBase
@@ -1460,8 +1463,18 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             StemAction.DIGITAL_ASSISTANT, StemAction.CUSTOM_SHORTCUT -> {
                 val side = if (bud == AACPManager.Companion.StemPressBudType.LEFT) StemShortcutSide.LEFT else StemShortcutSide.RIGHT
                 val press = StemShortcutPress.fromString(type.name) ?: return
+                val source = packetSourceSocket.get() ?: return
+                val peer = currentPacketPeer() ?: return
+                val guard = StemShortcutEventGuard(source, this, aacpManager.captureDeviceSession(), peer)
+                val binding = readStemShortcutBinding(side, press, sharedPreferences::stemString)
+                    ?.takeIf { it.action == action } ?: return
+                val acceptedAt = android.os.SystemClock.elapsedRealtime()
                 serviceScope.launch(Dispatchers.Main) {
-                    if (!serviceResources.isClosed) StemShortcutDispatcher.request(this@AirPodsService, side, press)
+                    if (guard.isCurrent(BluetoothConnectionManager.aacpSocket, ServiceManager.getService(),
+                            aacpManager.captureDeviceSession(), sharedPreferences.stemString("mac_address"),
+                            isCurrentControlSocket(source))) {
+                        StemShortcutDispatcher.request(this@AirPodsService, binding, acceptedAt)
+                    }
                 }
             }
 

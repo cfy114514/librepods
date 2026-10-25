@@ -72,6 +72,14 @@ object StemShortcutDispatcher {
 
     fun request(context: Context, side: StemShortcutSide, press: StemShortcutPress = StemShortcutPress.LONG_PRESS) {
         val binding = currentBinding(context, side, press) ?: return
+        request(context, binding, SystemClock.elapsedRealtime())
+    }
+
+    internal fun request(context: Context, binding: StemShortcutBinding, createdAt: Long) {
+        val side = binding.side
+        val press = binding.press
+        if (!isStemShortcutRequestCurrent(binding, currentBinding(context, side, press),
+                createdAt, SystemClock.elapsedRealtime())) return
         val intent = Intent(context, StemShortcutDispatchActivity::class.java)
             .setAction("${context.packageName}.STEM_SHORTCUT.${side.id}")
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
@@ -79,7 +87,7 @@ object StemShortcutDispatcher {
             .putExtra(EXTRA_PRESS, press.name)
             .putExtra(EXTRA_ACTION, binding.action.name)
             .putExtra(EXTRA_TARGET, binding.target?.let(StemShortcutCodec::encode))
-            .putExtra(EXTRA_CREATED_AT, SystemClock.elapsedRealtime())
+            .putExtra(EXTRA_CREATED_AT, createdAt)
         val keyguard = context.getSystemService(KeyguardManager::class.java)
         val locked = keyguard.isKeyguardLocked || keyguard.isDeviceLocked
         // ProcessLifecycleOwner deliberately delays pause events; it cannot prove launch eligibility.

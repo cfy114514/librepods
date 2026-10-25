@@ -248,4 +248,47 @@ class StemShortcutTest {
             "left_long_press_shortcut" to "1|action|camera")
         assertNull(readStemShortcutBinding(StemShortcutSide.LEFT, StemShortcutPress.SINGLE_PRESS, values::get))
     }
+
+    @Test fun queuedStemEventCannotOutliveItsSourceSessionServiceOrSelectedPeer() {
+        val socket = Any()
+        val service = Any()
+        val guard = StemShortcutEventGuard(socket, service, 7, "AA:BB")
+        assertTrue(guard.isCurrent(socket, service, 7, "aa:bb", true))
+        assertFalse(guard.isCurrent(Any(), service, 7, "AA:BB", true))
+        assertFalse(guard.isCurrent(socket, Any(), 7, "AA:BB", true))
+        assertFalse(guard.isCurrent(socket, service, 8, "AA:BB", true))
+        assertFalse(guard.isCurrent(socket, service, 7, "CC:DD", true))
+        assertFalse(guard.isCurrent(socket, service, 7, "AA:BB", false))
+        assertFalse(guard.isCurrent(null, service, 7, "AA:BB", true))
+        assertFalse(guard.isCurrent(socket, null, 7, "AA:BB", true))
+    }
+
+    @Test fun queuedStemEventRetainsOriginalTargetAndAgeUntilMainThreadDelivery() {
+        val socket = Any()
+        val service = Any()
+        val guard = StemShortcutEventGuard(socket, service, 7, "AA:BB")
+        val accepted = StemShortcutBinding(StemShortcutSide.LEFT, StemAction.CUSTOM_SHORTCUT, app)
+        var current = accepted
+        var now = 100L
+        var currentSession = 7L
+        var deliveries = 0
+        val queued = {
+            if (guard.isCurrent(socket, service, currentSession, "AA:BB", true) &&
+                isStemShortcutRequestCurrent(accepted, current, 100, now)) deliveries++
+        }
+        current = accepted.copy(target = camera)
+        queued()
+        assertEquals(0, deliveries)
+        current = accepted
+        currentSession++
+        queued()
+        assertEquals(0, deliveries)
+        currentSession = 7
+        now = 60_101
+        queued()
+        assertEquals(0, deliveries)
+        now = 101
+        queued()
+        assertEquals(1, deliveries)
+    }
 }

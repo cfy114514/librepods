@@ -164,6 +164,23 @@ class StemShortcutDispatchLifecycle(handled: Boolean = false) {
     }
 }
 
+/** Retains the source of a packet while its UI work is queued on the main thread. */
+class StemShortcutEventGuard(
+    private val source: Any,
+    private val service: Any,
+    private val deviceSession: Long,
+    private val peer: String,
+) {
+    fun isCurrent(
+        currentSource: Any?,
+        currentService: Any?,
+        currentSession: Long,
+        currentPeer: String?,
+        sourceUsable: Boolean,
+    ): Boolean = source === currentSource && service === currentService && deviceSession == currentSession &&
+        peer.equals(currentPeer, ignoreCase = true) && sourceUsable
+}
+
 fun isStemShortcutRequestCurrent(
     requested: StemShortcutBinding,
     current: StemShortcutBinding?,
