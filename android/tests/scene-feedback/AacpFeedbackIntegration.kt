@@ -235,6 +235,27 @@ private fun writeAndFlushFailuresNeverPopulateCache() {
     }
 }
 
+private fun retirementInsideDispatchCallbackPreventsPhysicalWrite() {
+    for (retirement in listOf("session reset", "socket replacement", "cancellation")) {
+        val socket = WireSocket()
+        val aacp = manager(socket)
+        val allowed = AtomicBoolean(true)
+        var dispatches = 0
+        val sent = aacp.sendPacketObserved(controlReport(), socket, {
+            dispatches++
+            when (retirement) {
+                "session reset" -> aacp.beginDeviceSession()
+                "socket replacement" -> BluetoothConnectionManager.aacpSocket = WireSocket()
+                else -> allowed.set(false)
+            }
+        }, allowed::get)
+        expect(dispatches == 1, "Exercise $retirement inside dispatch callback")
+        expect(!sent, "Recheck $retirement after dispatch callback before physical write")
+        expect((socket.wire as ByteArrayOutputStream).size() == 0, "No packet after $retirement")
+        expect(aacp.getControlCommandStatusSnapshot().isEmpty(), "No optimistic cache after $retirement")
+    }
+}
+
 private fun aacpIntegrationCases(): List<IntegrationCase> = listOf(
     "outgoing_cache_and_listeners_never_become_reports" to ::outgoingCacheAndListenersNeverBecomeReports,
     "observer_values_and_registrations_are_independent" to ::observerValuesAndRegistrationsAreIndependent,
@@ -257,6 +278,7 @@ private fun aacpIntegrationCases(): List<IntegrationCase> = listOf(
         retirementWhileWaitingForStreamPreventsDispatch { _, socket, _ -> socket.close() }
     },
     "write_and_flush_failures_never_populate_cache" to ::writeAndFlushFailuresNeverPopulateCache,
+    "retirement_inside_dispatch_callback_prevents_physical_write" to ::retirementInsideDispatchCallbackPreventsPhysicalWrite,
 )
 
 fun main(args: Array<String>) {

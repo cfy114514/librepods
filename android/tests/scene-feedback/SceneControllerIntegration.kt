@@ -76,10 +76,13 @@ private class SceneWire(val wire: ControlledWire = ControlledWire()) : Closeable
         controller.begin(context, preset).map { QueuedWrite(it, BluetoothConnectionManager.aacpSocket as WireSocket) }
 
     /** Minimal callback adapter; this does not compile or verify the Android service wiring. */
-    fun write(queued: QueuedWrite): Boolean {
+    fun write(queued: QueuedWrite, beforeDispatch: () -> Unit = {}): Boolean {
         val command = queued.command
         val sent = aacp.sendPacketObserved(controlReport(command.target.setting.identifier(), command.target.value),
-            queued.socket, { controller.writeStarted(command, aacp.captureReceivedControlSequence()) }) {
+            queued.socket, {
+                beforeDispatch()
+                controller.writeStarted(command, aacp.captureReceivedControlSequence())
+            }) {
             controller.isCurrent(command)
         }
         controller.writeFinished(command, sent)
@@ -314,6 +317,27 @@ private fun manualChangeRetiresSceneConfirmation() = SceneWire().use { scene ->
     expect(scene.result().detail == SceneResultDetail.SETTING_CHANGED, "Explain superseding manual setting")
 }
 
+private fun replacementDuringDispatchCallbackPreservesRetryUncertainty() = SceneWire().use { scene ->
+    val old = scene.queue().single()
+    var replacement: QueuedWrite? = null
+    expect(!scene.write(old) { replacement = scene.queue().single() }, "Retirement in dispatch callback suppresses old physical write")
+    expect(scene.wire.bytes.size() == 0, "Old packet never reaches stream after replacement")
+    scene.expectStatus(SceneSettingStatus.WAITING, "Old callbacks cannot settle replacement attempt")
+    expect(scene.write(replacement!!), "Replacement request writes normally")
+    scene.report()
+    scene.expectStatus(SceneSettingStatus.UNCONFIRMED, "Retired dispatch conservatively prevents claiming ambiguous retry feedback")
+    expect(scene.result().detail == SceneResultDetail.EARLIER_REQUEST_UNRESOLVED, "Explain retired-dispatch uncertainty")
+}
+
+private fun expiryDuringDispatchCallbackCannotReviveConfirmation() = SceneWire().use { scene ->
+    val command = scene.queue().single()
+    expect(!scene.write(command) { scene.expire() }, "Expiry in dispatch callback suppresses physical write")
+    expect(scene.wire.bytes.size() == 0, "Expired command never reaches stream")
+    scene.report()
+    scene.expectStatus(SceneSettingStatus.UNCONFIRMED, "Observed dispatch remains conservatively unconfirmed after expiry")
+    expect(!scene.state.isApplying, "Late dispatch and report cannot revive an expired attempt")
+}
+
 private fun actualModelPolicyOmitsUnsupportedSceneOptions() {
     expect(scenePresetPlans(AirPods().capabilities, premium = true).isEmpty(), "Model without listening modes must not offer scenes")
     val oldPro = scenePresetPlans(AirPodsPro1().capabilities, premium = true)
@@ -348,5 +372,7 @@ internal fun sceneIntegrationCases(): List<IntegrationCase> = listOf(
     "unresolved_retry_cannot_claim_earlier_reply" to ::unresolvedRetryCannotClaimEarlierReply,
     "superseding_attempt_retires_unsent_callbacks" to ::supersedingAttemptRetiresUnsentCallbacks,
     "manual_change_retires_scene_confirmation" to ::manualChangeRetiresSceneConfirmation,
+    "replacement_during_dispatch_callback_preserves_retry_uncertainty" to ::replacementDuringDispatchCallbackPreservesRetryUncertainty,
+    "expiry_during_dispatch_callback_cannot_revive_confirmation" to ::expiryDuringDispatchCallbackCannotReviveConfirmation,
     "actual_model_policy_omits_unsupported_scene_options" to ::actualModelPolicyOmitsUnsupportedSceneOptions,
 )

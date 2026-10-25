@@ -26,7 +26,7 @@ identify the tested source when a development worktree has uncommitted changes.
 All compilation output and mutated copies are removed on exit. Use
 `--case case_name` to run one named case.
 
-The 28 integration cases check these contracts:
+The 31 integration cases check these contracts:
 
 - Outgoing writes and ordinary optimistic cache/listener notifications cannot
   produce incoming device reports or advance the receive watermark.
@@ -39,6 +39,10 @@ The 28 integration cases check these contracts:
   final connection check. Watermark reads do not acquire the AACP monitor.
 - Socket replacement, session reset, disconnect and cancellation while waiting
   for the stream prevent dispatch, writes and optimistic cache publication.
+  Retirement during the dispatch callback is checked again before physical
+  output. A superseding or expired attempt cannot revive confirmation through
+  that callback, and observed retired dispatches retain conservative retry
+  uncertainty.
 - Reports arriving during `write` or from another thread during a blocked
   `flush` remain pending until successful write completion. A failed write or
   flush cannot confirm the setting. After dispatch, transport failure remains
