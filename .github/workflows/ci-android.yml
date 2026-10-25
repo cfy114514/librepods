@@ -136,6 +136,8 @@ jobs:
             2>&1 | tee build/ci-ble-presence.log
           python3 tests/ble-scan-ordering/run.py \
             2>&1 | tee build/ci-ble-scan-ordering.log
+          python3 tests/scene-feedback/run.py \
+            2>&1 | tee build/ci-scene-feedback.log
 
       - name: Run Android Lint
         id: lint
