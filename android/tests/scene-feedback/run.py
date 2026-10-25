@@ -17,6 +17,8 @@ PRODUCTION_SOURCES = (
     "bluetooth/HeadTrackingMotion.kt",
     "bluetooth/RtBuddyHeadTracking.kt",
     "utils/OwnedCallbackSlot.kt",
+    "utils/InteractiveCommandQueue.kt",
+    "utils/KeyedWorkSession.kt",
     "data/CustomEq.kt",
     "data/AirPods.kt",
     "data/AirPodsName.kt",
@@ -36,7 +38,7 @@ def main():
     parser.add_argument("--compiler-lib", type=Path, help="Cached Gradle distribution lib directory")
     parser.add_argument("--case", help="Run only the named integration case")
     parser.add_argument("--negative-controls", action="store_true",
-                        help="Also prove two isolated deliberately broken source snapshots fail targeted cases")
+                        help="Also prove three isolated deliberately broken source snapshots fail targeted cases")
     options = parser.parse_args()
     compiler_lib = options.compiler_lib
     if compiler_lib is None:
@@ -119,6 +121,10 @@ def main():
              "if (entry.written != true || entry.reported != entry.command.target.value) return",
              "if (entry.reported != entry.command.target.value) return",
              "matching_reply_during_failed_flush_cannot_apply"),
+            ("manual_edit_rewrites_previous_context", "data/ScenePresetController.kt",
+             "if (entry.command.context != context) return",
+             "// Removed context ownership guard for the isolated negative control.",
+             "manual_changes_on_replacement_preserve_earlier_results"),
         )
         for name, relative, original, replacement, case in mutations:
             text = source_bytes[relative].decode()

@@ -156,6 +156,9 @@ internal class ScenePresetController {
 
     @Synchronized fun supersede(setting: SceneSetting, reason: SceneResultDetail = SceneResultDetail.SETTING_CHANGED) {
         val entry = entries[setting] ?: return
+        // Retained results describe their original connection/selection. An edit now belongs
+        // to the current context and cannot revise that earlier attempt's observed outcome.
+        if (entry.command.context != context) return
         if (entry.result.status == SceneSettingStatus.FAILED) return
         finishUncertain(entry, reason)
         publish()

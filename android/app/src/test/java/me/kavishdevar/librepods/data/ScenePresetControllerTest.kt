@@ -243,6 +243,27 @@ class ScenePresetControllerTest {
         assertEquals(SceneSettingStatus.APPLIED, controller.result(conversation.setting).status)
     }
 
+    @Test fun manualChangesCannotRewriteResultsFromAnEarlierContext() {
+        val replacements = listOf(null, context.copy(peer = "peer-b"), context.copy(selection = 2),
+            context.copy(binding = 2), context.copy(deviceSession = 2))
+        replacements.forEach { replacement ->
+            val controller = controller()
+            val commands = controller.begin(context, plan(mode, conversation))
+            commands.forEach { controller.send(it) }
+            controller.received(context, mode.setting, mode.value, 11)
+            controller.setContext(replacement)
+            val history = controller.state.value
+
+            controller.supersede(mode.setting)
+            controller.supersede(conversation.setting)
+
+            assertEquals(history, controller.state.value)
+            assertEquals(SceneSettingStatus.APPLIED, controller.result().status)
+            assertEquals(SceneResultDetail.CONNECTION_CHANGED, controller.result(conversation.setting).detail)
+            assertTrue(controller.state.value.connectionChanged)
+        }
+    }
+
     @Test fun capabilityOrEntitlementLossCancelsPendingWorkAndLeavesSentWorkUnconfirmed() {
         val controller = controller()
         val commands = controller.begin(context, plan(mode, conversation, volume))
