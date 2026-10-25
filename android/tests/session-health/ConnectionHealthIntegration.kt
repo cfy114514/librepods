@@ -121,6 +121,31 @@ private fun newerBroadcastWinsOverAlreadyRunningProfileQuery() {
     expectStatus(report, HealthRowKind.CALLS, HealthStatus.CONNECTED, "Calls query reports only its own profile")
 }
 
+private fun delayedProfileQueryCannotMintFreshEvidence() {
+    val f = HealthFixture()
+    val queryStartedAt = f.clock.now
+    val query = requireNotNull(f.monitor.beginProfileObservation(f.selection, HealthAudioProfile.MEDIA))
+    f.clock.advance(120_001)
+    expect(f.monitor.profileObserved(query, HealthProfileState.CONNECTED), "Current query may retain its old observation")
+    val report = f.read()
+    expectEquals(queryStartedAt, report.rows.single { it.kind == HealthRowKind.MEDIA }.observedAt,
+        "A slow query retains its start time, not its late completion time")
+    expectStatus(report, HealthRowKind.MEDIA, HealthStatus.STALE, "Delayed query cannot establish a fresh connection")
+}
+
+private fun delayedIncomingPacketCannotMintFreshEvidence() {
+    val f = HealthFixture()
+    val control = requireNotNull(f.monitor.controlOpened(f.selection))
+    val receivedAt = f.clock.now
+    // The socket reader captures receipt before waiting to publish under the service socket lock.
+    f.clock.advance(120_001)
+    expect(f.monitor.controlPacket(control, receivedAt), "Current socket may retain its old incoming observation")
+    val report = f.read()
+    expectEquals(receivedAt, report.rows.single { it.kind == HealthRowKind.CONTROL }.observedAt,
+        "A delayed packet retains receipt time, not processing time")
+    expectStatus(report, HealthRowKind.CONTROL, HealthStatus.STALE, "Delayed processing cannot establish recent incoming data")
+}
+
 private fun peerSelectionAndControlReplacementRejectLateEvidence() {
     val f = HealthFixture()
     val original = f.selection
@@ -248,6 +273,8 @@ internal fun healthCases(): List<IntegrationCase> = listOf(
     "health_repeated_refresh_does_not_refresh_transport_evidence" to ::repeatedRefreshCannotRefreshOldProfileOrPacketEvidence,
     "health_service_and_platform_evidence_expire_independently" to ::oldServiceAndPlatformSnapshotsExpireIndependently,
     "health_newer_broadcast_wins_over_old_query" to ::newerBroadcastWinsOverAlreadyRunningProfileQuery,
+    "health_delayed_profile_query_retains_start_time" to ::delayedProfileQueryCannotMintFreshEvidence,
+    "health_delayed_incoming_packet_retains_receipt_time" to ::delayedIncomingPacketCannotMintFreshEvidence,
     "health_peer_and_socket_changes_reject_late_evidence" to ::peerSelectionAndControlReplacementRejectLateEvidence,
     "health_permission_and_adapter_recovery_need_fresh_events" to ::permissionAndAdapterInvalidationRequireFreshEvidence,
     "health_observer_restart_and_newer_read_reject_late_results" to ::observerStopRestartAndNewerReadFenceLateResults,

@@ -14,7 +14,7 @@ internal class ConnectionHealthMonitor(private val clock: () -> Long) : Closeabl
     class Selection internal constructor(val peer: String, internal val generation: Long, internal val owner: Any)
     class ControlTicket internal constructor(internal val selection: Selection, internal val id: Long)
     class ProfileTicket internal constructor(internal val selection: Selection,
-        internal val profile: HealthAudioProfile, internal val version: Long)
+        internal val profile: HealthAudioProfile, internal val version: Long, internal val observedAt: Long)
 
     private val owner = Any()
     private var selected: Selection? = null
@@ -53,21 +53,24 @@ internal class ConnectionHealthMonitor(private val clock: () -> Long) : Closeabl
         bluetoothInvalidated = true
     }
 
-    @Synchronized fun profileChanged(selection: Selection, profile: HealthAudioProfile, state: HealthProfileState): Boolean {
+    @Synchronized fun profileChanged(selection: Selection, profile: HealthAudioProfile, state: HealthProfileState,
+                                     observedAt: Long = clock()): Boolean {
         if (!current(selection)) return false
+        if (observedAt < 0 || observedAt > clock() || observedAt < (profiles[profile]?.observedAt ?: 0L)) return false
         profileVersions[profile] = (profileVersions[profile] ?: 0L) + 1L
-        profiles[profile] = HealthProfileEvidence(state, clock())
+        profiles[profile] = HealthProfileEvidence(state, observedAt)
         bluetoothInvalidated = false
         return true
     }
 
     /** Optional piggyback on an already-owned profile query; never acquire a proxy for this. */
     @Synchronized fun beginProfileObservation(selection: Selection, profile: HealthAudioProfile): ProfileTicket? =
-        if (current(selection)) ProfileTicket(selection, profile, profileVersions[profile] ?: 0L) else null
+        if (current(selection)) ProfileTicket(selection, profile, profileVersions[profile] ?: 0L, clock()) else null
 
     @Synchronized fun profileObserved(ticket: ProfileTicket, state: HealthProfileState): Boolean {
         if (!current(ticket.selection) || ticket.version != (profileVersions[ticket.profile] ?: 0L)) return false
-        return profileChanged(ticket.selection, ticket.profile, state)
+        // The remote read can block after obtaining its result. Completion cannot renew its age.
+        return profileChanged(ticket.selection, ticket.profile, state, ticket.observedAt)
     }
 
     @Synchronized fun controlOpened(selection: Selection): ControlTicket? {
@@ -79,14 +82,17 @@ internal class ConnectionHealthMonitor(private val clock: () -> Long) : Closeabl
         return ticket
     }
 
-    @Synchronized fun controlPacket(ticket: ControlTicket): Boolean {
+    @Synchronized fun controlPacket(ticket: ControlTicket, receivedAt: Long = clock()): Boolean {
         if (!current(ticket.selection) || activeControl !== ticket) return false
         val previous = control ?: return false
         val now = clock()
+        if (receivedAt < 0 || receivedAt > now || receivedAt < previous.changedAt ||
+            receivedAt < (previous.lastPacketAt ?: 0L)) return false
         // Sensor streams can deliver hundreds of packets per second. One timestamp update per
         // second is enough for the two-minute display window and avoids per-packet UI allocation.
-        if (previous.lastPacketAt == null || now < previous.lastPacketAt || now - previous.lastPacketAt >= 1_000L) {
-            control = previous.copy(lastPacketAt = now)
+        // Keep the socket reader's receipt time even when publication waits on another lock.
+        if (previous.lastPacketAt == null || receivedAt - previous.lastPacketAt >= 1_000L) {
+            control = previous.copy(lastPacketAt = receivedAt)
         }
         return true
     }

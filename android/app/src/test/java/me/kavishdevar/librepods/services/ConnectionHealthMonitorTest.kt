@@ -125,4 +125,62 @@ class ConnectionHealthMonitorTest {
         assertTrue(monitor.snapshot().profiles.isEmpty())
         assertNull(monitor.snapshot().peer)
     }
+
+    @Test fun delayedQueryRetainsStartTimeInsteadOfCompletionTime() {
+        val monitor = monitor()
+        val selected = monitor.selectPeer(first)!!
+        val startedAt = now
+        val query = monitor.beginProfileObservation(selected, HealthAudioProfile.MEDIA)!!
+        now += 120_001
+        assertTrue(monitor.profileObserved(query, HealthProfileState.CONNECTED))
+        assertEquals(startedAt, monitor.snapshot().profiles[HealthAudioProfile.MEDIA]!!.observedAt)
+    }
+
+    @Test fun delayedControlPacketRetainsReceiptTimeAndRejectsImpossibleOrOlderReceipts() {
+        val monitor = monitor()
+        val selected = monitor.selectPeer(first)!!
+        val control = monitor.controlOpened(selected)!!
+        val receivedAt = now + 1_000
+        now += 121_001
+        assertTrue(monitor.controlPacket(control, receivedAt))
+        assertEquals(receivedAt, monitor.snapshot().control!!.lastPacketAt)
+        assertFalse(monitor.controlPacket(control, -1))
+        assertFalse(monitor.controlPacket(control, now + 1))
+        assertFalse(monitor.controlPacket(control, receivedAt - 1))
+        assertEquals(receivedAt, monitor.snapshot().control!!.lastPacketAt)
+    }
+
+    @Test fun controlReceiptBeforeSocketOpenedCannotEstablishIncomingData() {
+        val monitor = monitor()
+        val control = monitor.controlOpened(monitor.selectPeer(first)!!)!!
+        assertFalse(monitor.controlPacket(control, now - 1))
+        assertNull(monitor.snapshot().control!!.lastPacketAt)
+    }
+
+    @Test fun packetTimestampCoalescingUsesReceiptTimeWithoutAllocationForEveryPacket() {
+        val monitor = monitor()
+        val control = monitor.controlOpened(monitor.selectPeer(first)!!)!!
+        val receivedAt = now
+        now += 10_000
+        assertTrue(monitor.controlPacket(control, receivedAt))
+        val firstPacket = monitor.snapshot().control
+        repeat(999) { assertTrue(monitor.controlPacket(control, receivedAt + it + 1)) }
+        assertSame(firstPacket, monitor.snapshot().control)
+        assertTrue(monitor.controlPacket(control, receivedAt + 1_000))
+        assertEquals(receivedAt + 1_000, monitor.snapshot().control!!.lastPacketAt)
+    }
+
+    @Test fun profileReceiptTimeRejectsInvalidOrOutOfOrderEventsWithoutRetiringCurrentQuery() {
+        val monitor = monitor()
+        val selected = monitor.selectPeer(first)!!
+        val receivedAt = now
+        now += 1_000
+        assertTrue(monitor.profileChanged(selected, HealthAudioProfile.MEDIA, HealthProfileState.DISCONNECTED, receivedAt))
+        val query = monitor.beginProfileObservation(selected, HealthAudioProfile.MEDIA)!!
+        assertFalse(monitor.profileChanged(selected, HealthAudioProfile.MEDIA, HealthProfileState.CONNECTED, -1))
+        assertFalse(monitor.profileChanged(selected, HealthAudioProfile.MEDIA, HealthProfileState.CONNECTED, now + 1))
+        assertFalse(monitor.profileChanged(selected, HealthAudioProfile.MEDIA, HealthProfileState.CONNECTED, receivedAt - 1))
+        assertEquals(receivedAt, monitor.snapshot().profiles[HealthAudioProfile.MEDIA]!!.observedAt)
+        assertTrue(monitor.profileObserved(query, HealthProfileState.CONNECTED))
+    }
 }
