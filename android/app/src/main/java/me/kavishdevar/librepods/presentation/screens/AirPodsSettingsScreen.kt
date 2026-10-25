@@ -103,6 +103,8 @@ import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.bluetooth.AACPManager
 import me.kavishdevar.librepods.bluetooth.ATTHandles
 import me.kavishdevar.librepods.data.Capability
+import me.kavishdevar.librepods.data.SceneApplyState
+import me.kavishdevar.librepods.data.ScenePresetId
 import me.kavishdevar.librepods.presentation.MaterialIcons
 import me.kavishdevar.librepods.presentation.components.AboutCard
 import me.kavishdevar.librepods.presentation.components.AudioSettings
@@ -114,6 +116,7 @@ import me.kavishdevar.librepods.presentation.components.MaterialButtonStyle
 import me.kavishdevar.librepods.presentation.components.NoiseControlSettings
 import me.kavishdevar.librepods.presentation.components.PressAndHoldSettings
 import me.kavishdevar.librepods.presentation.components.SleepTimerSettings
+import me.kavishdevar.librepods.presentation.components.ScenePresetsDialog
 import me.kavishdevar.librepods.presentation.components.StyledButton
 import me.kavishdevar.librepods.presentation.components.StyledListItem
 import me.kavishdevar.librepods.presentation.components.StyledToggle
@@ -152,6 +155,7 @@ fun AirPodsSettingsRoute(
     navigateToBatteryHistory: () -> Unit = {}
 ) {
     val state by viewModel.uiState.collectAsState()
+    val sceneApplication by viewModel.sceneApplyState.collectAsState()
 
     LaunchedEffect(viewModel, viewModel.isReady) {
         if (viewModel.isReady) viewModel.loadCurrentStatus()
@@ -205,7 +209,9 @@ fun AirPodsSettingsRoute(
             navigateToBatteryHistory = navigateToBatteryHistory,
 
             activateDemoMode = viewModel::activateDemoMode,
-            reconnectFromSavedMac = viewModel::reconnectFromSavedMac
+            reconnectFromSavedMac = viewModel::reconnectFromSavedMac,
+            sceneApplication = sceneApplication,
+            onApplyScenePreset = viewModel::applyScenePreset
         )
     }
 }
@@ -252,7 +258,10 @@ fun AirPodsSettingsScreen(
     navigateToLiveTranslation: () -> Unit = {},
         navigateToCameraControl: () -> Unit = {},
         navigateToBatteryHistory: () -> Unit = {},
+        sceneApplication: SceneApplyState = SceneApplyState(),
+        onApplyScenePreset: (ScenePresetId) -> Unit = {},
 ) {
+    var showScenePresets by remember { mutableStateOf(false) }
     val context = LocalContext.current
     val sharedPreferences = context.getSharedPreferences("settings", MODE_PRIVATE)
     var deviceName by remember {
@@ -277,6 +286,11 @@ fun AirPodsSettingsScreen(
         onDispose {
             sharedPreferences.unregisterOnSharedPreferenceChangeListener(nameChangeListener)
         }
+    }
+
+    if (showScenePresets) {
+        ScenePresetsDialog(state.capabilities, state.isPremium, state.canApplyScenePresets,
+            sceneApplication, onApplyScenePreset, onDismiss = { showScenePresets = false })
     }
 
     if (state.isLocallyConnected) {
@@ -383,6 +397,17 @@ fun AirPodsSettingsScreen(
                                 AACPManager.Companion.ControlCommandIdentifiers.LISTENING_MODE, it
                             )
                         },
+                    )
+                }
+            }
+
+            if (capabilities.contains(Capability.LISTENING_MODE)) {
+                item(key = "scene_presets") {
+                    Spacer(modifier = Modifier.height(16.dp))
+                    StyledListItem(
+                        name = stringResource(R.string.scene_presets_title),
+                        description = stringResource(R.string.scene_presets_description),
+                        onClick = { showScenePresets = true }
                     )
                 }
             }

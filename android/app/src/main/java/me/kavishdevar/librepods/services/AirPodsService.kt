@@ -322,18 +322,21 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         val scope: MetadataScope, val values: Map<Int, String>, val modelNumber: String? = null,
         val batterySnapshot: List<Battery>? = null)
     private val metadataSelection = AtomicLong()
-    private data class InteractiveCommand(val packet: ByteArray, val socket: BluetoothSocket, val deviceSession: Long)
+    private data class InteractiveCommand(val packet: ByteArray, val socket: BluetoothSocket, val deviceSession: Long,
+        val onDispatch: (() -> Unit)? = null, val onWritten: ((Boolean) -> Unit)? = null)
     private val interactiveCommandKeys = setOf(
         AACPManager.Companion.ControlCommandIdentifiers.LISTENING_MODE.value,
         AACPManager.Companion.ControlCommandIdentifiers.CONVERSATION_DETECT_CONFIG.value,
+        AACPManager.Companion.ControlCommandIdentifiers.ADAPTIVE_VOLUME_CONFIG.value,
         AACPManager.Companion.ControlCommandIdentifiers.STEM_CONFIG.value)
     private val interactiveCommands = serviceResources.track(InteractiveCommandQueue<Byte, InteractiveCommand>(
         interactiveCommandKeys, Dispatchers.IO, onError = { Log.w(TAG, "Interactive command failed", it) }
     ) { request, current ->
-        aacpManager.sendPacket(request.packet, request.socket) {
+        val written = aacpManager.sendPacketObserved(request.packet, request.socket, request.onDispatch) {
             current() && ServiceManager.getService() === this@AirPodsService &&
                 aacpManager.isCurrentDeviceSession(request.deviceSession) && isCurrentControlSocket(request.socket)
         }
+        runCatching { request.onWritten?.invoke(written) }.onFailure { Log.w(TAG, "Command write observer failed", it) }
     })
     private val metadataBindingLock = Any()
     @Volatile private var desiredInformationMetadata: MetadataRequest? = null
@@ -2764,11 +2767,13 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     }
 
     internal fun enqueueInteractiveCommand(identifier: Byte, value: ByteArray,
-        valid: () -> Boolean = { true }, onComplete: (() -> Unit)? = null): Boolean {
+        valid: () -> Boolean = { true }, onComplete: (() -> Unit)? = null,
+        onDispatch: (() -> Unit)? = null, onWritten: ((Boolean) -> Unit)? = null): Boolean {
         val socket = BluetoothConnectionManager.aacpSocket
         val legalValue = value.size == 1 && when (identifier) {
             AACPManager.Companion.ControlCommandIdentifiers.LISTENING_MODE.value -> value[0].toInt() in 1..4
-            AACPManager.Companion.ControlCommandIdentifiers.CONVERSATION_DETECT_CONFIG.value -> value[0].toInt() in 1..2
+            AACPManager.Companion.ControlCommandIdentifiers.CONVERSATION_DETECT_CONFIG.value,
+            AACPManager.Companion.ControlCommandIdentifiers.ADAPTIVE_VOLUME_CONFIG.value -> value[0].toInt() in 1..2
             AACPManager.Companion.ControlCommandIdentifiers.STEM_CONFIG.value -> value[0].toInt() in 0..15
             else -> false
         }
@@ -2780,7 +2785,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         val session = aacpManager.captureDeviceSession()
         val packet = aacpManager.createDataPacket(aacpManager.createControlCommandPacket(
             identifier, value.copyOf()))
-        return interactiveCommands.offer(identifier, InteractiveCommand(packet, socket, session), valid) { onComplete?.invoke() }
+        return interactiveCommands.offer(identifier, InteractiveCommand(packet, socket, session, onDispatch, onWritten), valid) { onComplete?.invoke() }
     }
 
     @RequiresApi(Build.VERSION_CODES.R)
