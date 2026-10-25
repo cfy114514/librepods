@@ -25,6 +25,7 @@ enum class StemAction {
     PREVIOUS_TRACK,
     NEXT_TRACK,
     DIGITAL_ASSISTANT,
+    CUSTOM_SHORTCUT,
     CYCLE_NOISE_CONTROL_MODES;
     companion object {
         fun fromString(action: String): StemAction? {

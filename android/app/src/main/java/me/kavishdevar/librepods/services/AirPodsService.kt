@@ -111,6 +111,9 @@ import me.kavishdevar.librepods.data.appleHeadsetBatteryIndicator
 import me.kavishdevar.librepods.data.Capability
 import me.kavishdevar.librepods.data.CustomEq
 import me.kavishdevar.librepods.data.StemAction
+import me.kavishdevar.librepods.data.StemShortcutSide
+import me.kavishdevar.librepods.data.StemShortcutPress
+import me.kavishdevar.librepods.shortcuts.StemShortcutDispatcher
 import me.kavishdevar.librepods.data.XposedRemotePrefProvider
 import me.kavishdevar.librepods.data.AirPodsBase
 import me.kavishdevar.librepods.data.isHeadTrackingData
@@ -1272,7 +1275,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 } else {
                     val action = getActionFor(bud, stemPressType)
                     Log.d("AirPodsParser", "$bud $stemPressType action: $action")
-                    action?.let { executeStemAction(it) }
+                    action?.let { executeStemAction(it, bud, stemPressType) }
                 }
             }
 
@@ -1440,7 +1443,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         }.invokeOnCompletion { cameraCaptureInFlight.set(false) }
     }
 
-    private fun executeStemAction(action: StemAction) {
+    private fun executeStemAction(action: StemAction, bud: AACPManager.Companion.StemPressBudType, type: StemPressType) {
         when (action) {
             StemAction.defaultActions[StemPressType.SINGLE_PRESS] -> {
                 Log.d(
@@ -1451,17 +1454,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             StemAction.PLAY_PAUSE -> MediaController.sendPlayPause()
             StemAction.PREVIOUS_TRACK -> MediaController.sendPreviousTrack()
             StemAction.NEXT_TRACK -> MediaController.sendNextTrack()
-            StemAction.DIGITAL_ASSISTANT -> {
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                    val intent = Intent(Intent.ACTION_VOICE_COMMAND).apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-                    }
-                    startActivity(intent)
-                } else {
-                    Log.w(
-                        "AirPodsParser",
-                        "Digital Assistant action is not supported on this Android version."
-                    )
+            StemAction.DIGITAL_ASSISTANT, StemAction.CUSTOM_SHORTCUT -> {
+                val side = if (bud == AACPManager.Companion.StemPressBudType.LEFT) StemShortcutSide.LEFT else StemShortcutSide.RIGHT
+                val press = StemShortcutPress.fromString(type.name) ?: return
+                serviceScope.launch(Dispatchers.Main) {
+                    if (!serviceResources.isClosed) StemShortcutDispatcher.request(this@AirPodsService, side, press)
                 }
             }
 

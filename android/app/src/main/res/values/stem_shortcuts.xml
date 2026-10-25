@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="stem_shortcuts_title">Stem shortcuts</string>
+    <string name="stem_shortcut_custom">App or shortcut</string>
+    <string name="stem_shortcut_choose">Choose an app or shortcut</string>
+    <string name="stem_shortcut_search">Search apps and actions</string>
+    <string name="stem_shortcut_supported">Choose an installed app or one of the available Android actions below. App-specific launcher shortcuts are not available here. If a target is unavailable, LibrePods requests your default assistant instead.</string>
+    <string name="stem_shortcut_behavior">If this target cannot be opened, LibrePods requests your default digital assistant. When LibrePods is in the background, tap the shortcut notification to continue; notifications must be enabled. Unlock your phone first. Android or the target app may still prevent opening; voice mode is not guaranteed.</string>
+    <string name="stem_shortcut_assistant_behavior">Requests your default digital assistant. When LibrePods is in the background, tap the shortcut notification to continue; notifications must be enabled. Unlock your phone first. Assistant availability depends on your phone settings; voice mode is not guaranteed.</string>
+    <string name="stem_shortcut_android_action">Android action</string>
+    <string name="stem_shortcut_camera">Open camera</string>
+    <string name="stem_shortcut_alarms">Show alarms</string>
+    <string name="stem_shortcut_none">No saved target. The default assistant will be requested.</string>
+    <string name="stem_shortcut_target_unavailable">Unavailable. The default assistant will be requested.</string>
+    <string name="stem_shortcut_change">Tap to change</string>
+    <string name="stem_shortcut_try">Try shortcut</string>
+    <string name="stem_shortcut_loading">Loading available apps and actions…</string>
+    <string name="stem_shortcut_load_failed">Could not read available apps and actions. Try again.</string>
+    <string name="stem_shortcut_save_failed">Could not save this target. Try again.</string>
+    <string name="stem_shortcut_no_matches">No available apps or actions match.</string>
+    <string name="stem_shortcut_retry">Retry</string>
+    <string name="stem_shortcut_cancel">Cancel</string>
+    <string name="stem_shortcut_left_notification">Left stem shortcut</string>
+    <string name="stem_shortcut_right_notification">Right stem shortcut</string>
+    <string name="stem_shortcut_tap_notification">Unlock your phone and tap to continue.</string>
+    <string name="stem_shortcut_notifications_unavailable">Open LibrePods to run the shortcut, or enable its Stem shortcuts notifications in phone settings.</string>
+    <string name="stem_shortcut_preparing">Requesting stem shortcut…</string>
+    <string name="stem_shortcut_expired">This shortcut request expired or its settings changed. Press the stem again.</string>
+    <string name="stem_shortcut_unlock">Unlock your phone, then try the shortcut again.</string>
+    <string name="stem_shortcut_assistant_unavailable">Could not open a digital assistant. Choose one in your phone’s Default apps settings and try again.</string>
+    <string name="stem_shortcut_fallback_requested">Shortcut unavailable. Requested the default assistant; opening is not confirmed.</string>
+    <style name="Theme.StemShortcutDispatch" parent="@android:style/Theme.DeviceDefault.NoActionBar">
+        <item name="android:windowDisablePreview">true</item>
+    </style>
+</resources>

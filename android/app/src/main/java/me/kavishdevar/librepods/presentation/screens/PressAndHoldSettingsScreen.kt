@@ -42,6 +42,9 @@ import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.res.stringResource
@@ -51,10 +54,12 @@ import dev.chrisbanes.haze.materials.ExperimentalHazeMaterialsApi
 import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.bluetooth.AACPManager
 import me.kavishdevar.librepods.data.StemAction
+import me.kavishdevar.librepods.data.StemShortcutSide
 import me.kavishdevar.librepods.presentation.components.ListItemOrientation
 import me.kavishdevar.librepods.presentation.components.StyledButton
 import me.kavishdevar.librepods.presentation.components.StyledList
 import me.kavishdevar.librepods.presentation.components.StyledListItem
+import me.kavishdevar.librepods.presentation.components.StemShortcutSettings
 import me.kavishdevar.librepods.presentation.theme.DesignSystem
 import me.kavishdevar.librepods.presentation.theme.LocalDesignSystem
 import me.kavishdevar.librepods.presentation.viewmodel.AirPodsViewModel
@@ -76,6 +81,8 @@ fun LongPress(viewModel: AirPodsViewModel, name: String, navigateToPurchase: () 
     Log.d("PressAndHoldSettingsScreen", "Adaptive mode: ${(modesByte and 0x08) != 0.toByte()}")
 
     val longPressAction = if (name.lowercase() == "left") state.leftAction else state.rightAction
+    val shortcutSide = StemShortcutSide.fromString(name) ?: StemShortcutSide.RIGHT
+    var shortcutPickerOpen by remember(name) { mutableStateOf(false) }
 
     val m3eEnabled = LocalDesignSystem.current == DesignSystem.Material
     val topPadding = if (m3eEnabled) 0.dp else WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 84.dp
@@ -116,6 +123,30 @@ fun LongPress(viewModel: AirPodsViewModel, name: String, navigateToPurchase: () 
                 },
                 enabled = state.isPremium
             )
+
+            StyledListItem(
+                name = stringResource(R.string.stem_shortcut_custom),
+                selected = longPressAction == StemAction.CUSTOM_SHORTCUT,
+                onClick = { shortcutPickerOpen = true },
+                enabled = state.isPremium,
+            )
+        }
+
+        StemShortcutSettings(
+            side = shortcutSide,
+            active = longPressAction == StemAction.CUSTOM_SHORTCUT,
+            enabled = state.isPremium,
+            pickerOpen = shortcutPickerOpen,
+            onOpenPicker = { shortcutPickerOpen = true },
+            onDismissPicker = { shortcutPickerOpen = false },
+            onActivate = { viewModel.setLongPressAction(name, StemAction.CUSTOM_SHORTCUT) },
+        )
+
+        if (longPressAction == StemAction.DIGITAL_ASSISTANT) {
+            Text(stringResource(R.string.stem_shortcut_assistant_behavior),
+                modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp),
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
 
         if (!state.isPremium) {

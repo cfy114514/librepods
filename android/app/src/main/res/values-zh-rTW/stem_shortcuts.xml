@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="stem_shortcuts_title">耳機柄快捷操作</string>
+    <string name="stem_shortcut_custom">應用程式或快捷操作</string>
+    <string name="stem_shortcut_choose">選擇應用程式或快捷操作</string>
+    <string name="stem_shortcut_search">搜尋應用程式與操作</string>
+    <string name="stem_shortcut_supported">可選擇已安裝的應用程式或下方可用的 Android 操作。此處不支援應用程式的桌面專屬捷徑。目標無法使用時，LibrePods 會請求開啟預設數位助理。</string>
+    <string name="stem_shortcut_behavior">目標無法開啟時，LibrePods 會請求開啟預設數位助理。LibrePods 在背景執行時，需要點選快捷操作通知才能繼續，請先啟用通知並解鎖手機。Android 或目標應用程式仍可能阻止開啟，無法保證進入語音模式。</string>
+    <string name="stem_shortcut_assistant_behavior">請求開啟預設數位助理。LibrePods 在背景執行時，需要點選快捷操作通知才能繼續，請先啟用通知並解鎖手機。助理是否可用取決於手機設定，無法保證進入語音模式。</string>
+    <string name="stem_shortcut_android_action">Android 操作</string>
+    <string name="stem_shortcut_camera">開啟相機</string>
+    <string name="stem_shortcut_alarms">查看鬧鐘</string>
+    <string name="stem_shortcut_none">尚未儲存目標，將請求開啟預設數位助理。</string>
+    <string name="stem_shortcut_target_unavailable">目標無法使用，將請求開啟預設數位助理。</string>
+    <string name="stem_shortcut_change">點按變更</string>
+    <string name="stem_shortcut_try">試用快捷操作</string>
+    <string name="stem_shortcut_loading">正在載入可用應用程式與操作…</string>
+    <string name="stem_shortcut_load_failed">無法讀取可用應用程式與操作，請重試。</string>
+    <string name="stem_shortcut_save_failed">無法儲存此目標，請重試。</string>
+    <string name="stem_shortcut_no_matches">沒有符合的可用應用程式或操作。</string>
+    <string name="stem_shortcut_retry">重試</string>
+    <string name="stem_shortcut_cancel">取消</string>
+    <string name="stem_shortcut_left_notification">左側耳機柄快捷操作</string>
+    <string name="stem_shortcut_right_notification">右側耳機柄快捷操作</string>
+    <string name="stem_shortcut_tap_notification">請解鎖手機並點按以繼續。</string>
+    <string name="stem_shortcut_notifications_unavailable">請開啟 LibrePods 執行快捷操作，或在手機設定中啟用「耳機柄快捷操作」通知。</string>
+    <string name="stem_shortcut_preparing">正在請求快捷操作…</string>
+    <string name="stem_shortcut_expired">此快捷操作請求已過期或設定已變更，請再次按壓耳機柄。</string>
+    <string name="stem_shortcut_unlock">請解鎖手機後重試快捷操作。</string>
+    <string name="stem_shortcut_assistant_unavailable">無法開啟數位助理。請在手機的「預設應用程式」設定中選擇數位助理後重試。</string>
+    <string name="stem_shortcut_fallback_requested">快捷操作無法使用，已請求預設數位助理，但尚未確認是否開啟。</string>
+</resources>
