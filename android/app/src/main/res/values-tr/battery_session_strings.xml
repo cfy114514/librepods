@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="battery_session_title">Pil oturumu</string>
+    <string name="battery_session_description">Bu bağlantıdan gelen canlı bildirimler. Kalan süre kaba bir tahmindir; kullanım ve ayarlar süreyi değiştirebilir.</string>
+    <string name="battery_session_disconnected">Pil eğilimini kaydetmek için bağlanın</string>
+    <string name="battery_session_waiting">Canlı pil bildirimi bekleniyor</string>
+    <string name="battery_session_charging">Şarj oluyor · tahmin duraklatıldı</string>
+    <string name="battery_session_unavailable">Pil bildirimi yok · eğilim duraklatıldı</string>
+    <string name="battery_session_stale">Güncel pil bildirimi yok · eğilim duraklatıldı</string>
+    <string name="battery_session_clock_changed">Zaman referansı değişti · yeni eğilim kaydediliyor</string>
+    <string name="battery_session_collecting">Eğilim kaydediliyor · en az 15 dk gerekli</string>
+    <string name="battery_session_insufficient_drain">Tahmin için pil değişimi yetersiz</string>
+    <string name="battery_session_rough_minutes">Tahmini kalan süre: yaklaşık %1$d dk</string>
+    <string name="battery_session_rough_under_five">Tahmini kalan süre: 5 dk’dan az</string>
+    <string name="battery_session_trend">%3$d dk içinde %1$d%% → %2$d%%</string>
+    <string name="battery_session_level">%1$d%%</string>
+</resources>

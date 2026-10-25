@@ -40,6 +40,7 @@ import me.kavishdevar.librepods.data.HistoryTimeFormatter
 import me.kavishdevar.librepods.presentation.components.StyledList
 import me.kavishdevar.librepods.presentation.components.StyledListItem
 import me.kavishdevar.librepods.presentation.components.StyledToggle
+import me.kavishdevar.librepods.presentation.components.BatterySessionCard
 import me.kavishdevar.librepods.presentation.theme.DesignSystem
 import me.kavishdevar.librepods.presentation.theme.LocalDesignSystem
 import me.kavishdevar.librepods.presentation.widgets.BatteryWidget
@@ -113,11 +114,22 @@ fun BatteryHistoryScreen() {
     val context = LocalContext.current
     val settings = remember(context) { context.getSharedPreferences("settings", Context.MODE_PRIVATE) }
     val state = rememberHistoryUi()
+    var sessionAddress by remember(settings) { mutableStateOf(settings.getString("mac_address", "") ?: "") }
+    DisposableEffect(settings) {
+        val listener = SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == null || key == "mac_address") sessionAddress = settings.getString("mac_address", "") ?: ""
+        }
+        settings.registerOnSharedPreferenceChangeListener(listener)
+        onDispose { settings.unregisterOnSharedPreferenceChangeListener(listener) }
+    }
     val material = LocalDesignSystem.current == DesignSystem.Material
     val top = if (material) 16.dp else WindowInsets.statusBars.asPaddingValues().calculateTopPadding() + 100.dp
     Column(Modifier.fillMaxSize().background(MaterialTheme.colorScheme.surfaceContainer)
         .verticalScroll(rememberScrollState()).padding(horizontal = 16.dp)) {
         Spacer(Modifier.height(top))
+        // The card independently fences its observations to this selected peer and connection.
+        BatterySessionCard(sessionAddress)
+        Spacer(Modifier.height(16.dp))
         StyledToggle(label = stringResource(R.string.show_battery_history), description = stringResource(R.string.battery_history_description),
             checked = state.enabled, onCheckedChange = { value ->
                 settings.edit { putBoolean("show_battery_history", value) }

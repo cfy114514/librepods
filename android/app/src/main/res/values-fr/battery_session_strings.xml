@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="battery_session_title">Session de batterie</string>
+    <string name="battery_session_description">Relevés en direct de cette connexion. L’autonomie restante est approximative et peut varier selon l’utilisation et les réglages.</string>
+    <string name="battery_session_disconnected">Connectez les écouteurs pour suivre la batterie</string>
+    <string name="battery_session_waiting">En attente d’un relevé de batterie en direct</string>
+    <string name="battery_session_charging">En charge · estimation en pause</string>
+    <string name="battery_session_unavailable">Relevé de batterie indisponible · suivi en pause</string>
+    <string name="battery_session_stale">Aucun relevé récent · suivi en pause</string>
+    <string name="battery_session_clock_changed">Référence temporelle modifiée · nouveau suivi</string>
+    <string name="battery_session_collecting">Suivi en cours · au moins 15 min nécessaires</string>
+    <string name="battery_session_insufficient_drain">Variation de batterie insuffisante pour une estimation</string>
+    <string name="battery_session_rough_minutes">Autonomie restante approximative : environ %1$d min</string>
+    <string name="battery_session_rough_under_five">Autonomie restante approximative : moins de 5 min</string>
+    <string name="battery_session_trend">%1$d%% → %2$d%% en %3$d min</string>
+    <string name="battery_session_level">%1$d%%</string>
+</resources>

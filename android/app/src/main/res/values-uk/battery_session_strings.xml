@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="battery_session_title">Сеанс батареї</string>
+    <string name="battery_session_description">Поточні дані цього з’єднання. Час роботи, що залишився, є приблизним і залежить від використання та налаштувань.</string>
+    <string name="battery_session_disconnected">Підключіться, щоб відстежувати заряд батареї</string>
+    <string name="battery_session_waiting">Очікування поточних даних батареї</string>
+    <string name="battery_session_charging">Заряджання · оцінювання призупинено</string>
+    <string name="battery_session_unavailable">Дані батареї недоступні · відстеження призупинено</string>
+    <string name="battery_session_stale">Немає свіжих даних батареї · відстеження призупинено</string>
+    <string name="battery_session_clock_changed">Часову шкалу змінено · починається нове відстеження</string>
+    <string name="battery_session_collecting">Збираються дані · потрібно щонайменше 15 хв</string>
+    <string name="battery_session_insufficient_drain">Зміна заряду замала для оцінки</string>
+    <string name="battery_session_rough_minutes">Приблизний залишок часу: близько %1$d хв</string>
+    <string name="battery_session_rough_under_five">Приблизний залишок часу: менше ніж 5 хв</string>
+    <string name="battery_session_trend">%1$d%% → %2$d%% за %3$d хв</string>
+    <string name="battery_session_level">%1$d%%</string>
+</resources>
