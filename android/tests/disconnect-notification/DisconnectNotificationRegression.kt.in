@@ -74,6 +74,8 @@ private class AirPodsService {
     private val profileRequests = PendingProfileRequests<Int, Purpose, AudioProfileRequest>(setOf(1, 2), setOf(Purpose.POLICY))
     private val profileActionCurrent = ThreadLocal<() -> Boolean>()
     private val a2dpWatch = AtomicReference<Watch?>()
+    // Session-health ownership is exercised by the dedicated session-health harness.
+    private val ownedControlObservations = AtomicReference<java.io.Closeable?>()
     private lateinit var connectionReceiver: BroadcastReceiver
     private lateinit var installedFilter: IntentFilter
     private val bluetoothReceiver = object : BroadcastReceiver() {

@@ -191,6 +191,8 @@ private class AirPodsService : Context() {
 @@DEADLINE_FIELD@@
     private val profileActionCurrent = ThreadLocal<() -> Boolean>()
     private val a2dpWatch = AtomicReference<Watch?>()
+    // Diagnostic ownership does not replace this harness's actual audio-policy state.
+    private val ownedControlObservations = AtomicReference<java.io.Closeable?>()
     private val pending = ArrayDeque<PendingProfileRequests.Ticket<Int>>()
     val profiles = listOf(BluetoothProfile(BluetoothProfile.A2DP), BluetoothProfile(BluetoothProfile.HEADSET))
     val autoSocketGuards = mutableListOf<() -> Boolean>()
@@ -225,6 +227,9 @@ private class AirPodsService : Context() {
     private fun acquireAudioProfile(context: Context, ticket: PendingProfileRequests.Ticket<Int>) { pending.addLast(ticket) }
     private fun completeAudioProfileAcquisition(context: Context, adapter: BluetoothAdapter, acquisition: Any) = Unit
     private fun isCurrentProfileAction() = profileActionCurrent.get()?.invoke() != false
+    // Keep the real controlled platform query; diagnostic recording is covered separately.
+    private fun observedProfileConnectionState(proxy: BluetoothProfile, target: BluetoothDevice, profile: Int) =
+        proxy.getConnectionState(target)
 
 @@LISTENER@@
 @@PRESENCE_HELPERS@@

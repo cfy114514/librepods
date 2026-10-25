@@ -33,6 +33,19 @@ private class AacpManager {
     fun beginDeviceSession(): Long = ++sessions
 }
 
+// Observable collaborators only. Publication order/guards below still come from production.
+private class HealthMonitor {
+    class Selection(val peer: String)
+    fun selection() = Selection(PEER)
+    fun controlOpened(selection: Selection) = Any()
+}
+private class BatterySessionLease {
+    fun connect(address: String): Closeable = Closeable { }
+}
+private class ControlObservations(val socket: BluetoothSocket, val battery: Closeable?, val health: Any?) : Closeable {
+    override fun close() { battery?.close() }
+}
+
 /** Only collaborators are substituted; the publication body is current production source. */
 private class AirPodsService : Closeable {
     val serviceResources = CloseableResourceScope()
@@ -44,6 +57,9 @@ private class AirPodsService : Closeable {
     val originalAtt = BluetoothSocket()
     val ownedControlSocket = AtomicReference<BluetoothSocket?>(originalControl)
     val ownedAttSocket = AtomicReference<BluetoothSocket?>(originalAtt)
+    val connectionHealth = HealthMonitor()
+    val batterySessionLease = BatterySessionLease()
+    val ownedControlObservations = AtomicReference<ControlObservations?>()
     var device: BluetoothDevice? = null
     private val presence = AtomicLong()
     private val manualRequest = AtomicLong()
@@ -67,6 +83,7 @@ private class AirPodsService : Closeable {
         val attempt = connection.resources
         val device = connectedSocket.remoteDevice
         var packetGeneration = -1L
+        var observations: ControlObservations? = null
 @@PUBLICATION@@
         return packetGeneration
     }
