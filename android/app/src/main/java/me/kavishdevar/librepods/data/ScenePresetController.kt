@@ -24,8 +24,10 @@ internal data class SceneCommand(val attempt: Long, val context: SceneContext, v
 /**
  * AACP has no transaction IDs. Applied means a fresh device report matched after dispatch;
  * a write or optimistic cache entry alone cannot confirm anything. After an unresolved write,
- * retries of that setting remain unconfirmed for this connection: a late earlier report cannot
- * be attributed to the retry. All methods are short and never call transport or user callbacks.
+ * retries of that setting remain unconfirmed on the same connection while this controller lives:
+ * a late earlier report cannot be attributed to the retry. A fresh settings ViewModel starts a new
+ * history even if the service transport survives; observed values never prove causal acknowledgement.
+ * All methods are short and never call transport or user callbacks.
  */
 internal class ScenePresetController {
     private class Entry(val command: SceneCommand) {

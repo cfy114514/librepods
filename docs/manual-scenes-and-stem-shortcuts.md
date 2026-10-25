@@ -34,10 +34,13 @@ Each attempted setting has its own result:
 
 The attempt is bounded to eight seconds, including queue time. Changes can apply
 partly and are not rolled back. Settings stay changed until changed again. A
-retry after an unresolved write remains conservative for that connection because
-a delayed report could belong to the earlier attempt. Connection and selection
-changes retire pending work; results from the previous connection are labeled.
-Demo mode sends no changes.
+retry after an unresolved write remains conservative on the same connection
+within the current settings session because a delayed report could belong to the
+earlier attempt. A fresh settings ViewModel starts a new history even if the
+foreground service still holds the connection; the history is not durable across
+that recreation. Every observed result remains a value observation, never a
+command acknowledgement. Connection and selection changes retire pending work;
+results from the previous connection are labeled. Demo mode sends no changes.
 
 ## Stem shortcuts
 

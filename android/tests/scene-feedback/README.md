@@ -54,8 +54,11 @@ The 32 integration cases check these contracts:
   confirmation.
 - Connection replacement, session reset, manual edits and superseding attempts
   invalidate earlier work and callbacks. An unresolved same-setting retry stays
-  unconfirmed in the same connection because AACP has no transaction IDs.
-  Temporary context loss and selection-only changes do not clear that history.
+  unconfirmed in the same connection while the same controller lives because AACP
+  has no transaction IDs. Temporary context loss and selection-only changes do
+  not clear that history. A fresh settings ViewModel creates a new controller and
+  loses this history even if the service transport survives; these tests do not
+  establish a durable connection-wide ledger or causal command acknowledgement.
 - Real model capability and premium policies omit unsupported settings and hide
   unsupported scenes.
 
