@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="stem_shortcuts_title">Raccourcis de la tige</string>
+    <string name="stem_shortcut_custom">Application ou raccourci</string>
+    <string name="stem_shortcut_choose">Choisir une application ou un raccourci</string>
+    <string name="stem_shortcut_search">Rechercher des applications et des actions</string>
+    <string name="stem_shortcut_supported">Choisissez une application installée ou une des actions Android disponibles ci-dessous. Les raccourcis propres aux applications sur l’écran d’accueil ne sont pas disponibles ici. Si la cible est indisponible, LibrePods demande à ouvrir votre assistant par défaut.</string>
+    <string name="stem_shortcut_behavior">Si cette cible ne peut pas être ouverte, LibrePods demande à ouvrir votre assistant numérique par défaut. Lorsque LibrePods est en arrière-plan, touchez la notification du raccourci pour continuer ; les notifications doivent être activées. Déverrouillez d’abord votre téléphone. Android ou l’application cible peuvent encore empêcher l’ouverture ; le mode vocal n’est pas garanti.</string>
+    <string name="stem_shortcut_assistant_behavior">Demande à ouvrir votre assistant numérique par défaut. Lorsque LibrePods est en arrière-plan, touchez la notification du raccourci pour continuer ; les notifications doivent être activées. Déverrouillez d’abord votre téléphone. La disponibilité de l’assistant dépend des réglages du téléphone ; le mode vocal n’est pas garanti.</string>
+    <string name="stem_shortcut_android_action">Action Android</string>
+    <string name="stem_shortcut_camera">Ouvrir l’appareil photo</string>
+    <string name="stem_shortcut_alarms">Afficher les alarmes</string>
+    <string name="stem_shortcut_none">Aucune cible enregistrée. L’ouverture de l’assistant par défaut sera demandée.</string>
+    <string name="stem_shortcut_target_unavailable">Indisponible. L’ouverture de l’assistant par défaut sera demandée.</string>
+    <string name="stem_shortcut_change">Toucher pour modifier</string>
+    <string name="stem_shortcut_try">Essayer le raccourci</string>
+    <string name="stem_shortcut_loading">Chargement des applications et actions disponibles…</string>
+    <string name="stem_shortcut_load_failed">Impossible de lire les applications et actions disponibles. Réessayez.</string>
+    <string name="stem_shortcut_save_failed">Impossible d’enregistrer cette cible. Réessayez.</string>
+    <string name="stem_shortcut_no_matches">Aucune application ni action disponible ne correspond.</string>
+    <string name="stem_shortcut_retry">Réessayer</string>
+    <string name="stem_shortcut_cancel">Annuler</string>
+    <string name="stem_shortcut_left_notification">Raccourci de la tige gauche</string>
+    <string name="stem_shortcut_right_notification">Raccourci de la tige droite</string>
+    <string name="stem_shortcut_tap_notification">Déverrouillez votre téléphone et touchez pour continuer.</string>
+    <string name="stem_shortcut_notifications_unavailable">Ouvrez LibrePods pour exécuter le raccourci, ou activez ses notifications « Raccourcis de la tige » dans les réglages du téléphone.</string>
+    <string name="stem_shortcut_preparing">Demande d’exécution du raccourci de la tige…</string>
+    <string name="stem_shortcut_expired">Cette demande de raccourci a expiré ou ses réglages ont changé. Appuyez à nouveau sur la tige.</string>
+    <string name="stem_shortcut_unlock">Déverrouillez votre téléphone, puis réessayez le raccourci.</string>
+    <string name="stem_shortcut_assistant_unavailable">Impossible d’ouvrir un assistant numérique. Choisissez-en un dans les réglages « Applications par défaut » du téléphone, puis réessayez.</string>
+    <string name="stem_shortcut_fallback_requested">Raccourci indisponible. L’ouverture de l’assistant par défaut a été demandée ; elle n’est pas confirmée.</string>
+</resources>

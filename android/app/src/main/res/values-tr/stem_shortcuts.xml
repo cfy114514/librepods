@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="stem_shortcuts_title">Kulaklık sapı kısayolları</string>
+    <string name="stem_shortcut_custom">Uygulama veya kısayol</string>
+    <string name="stem_shortcut_choose">Uygulama veya kısayol seçin</string>
+    <string name="stem_shortcut_search">Uygulama ve eylem arayın</string>
+    <string name="stem_shortcut_supported">Yüklü bir uygulamayı veya aşağıdaki kullanılabilir Android eylemlerinden birini seçin. Ana ekrandaki uygulamaya özel kısayollar burada kullanılamaz. Hedef kullanılamıyorsa LibrePods varsayılan asistanınızın açılmasını ister.</string>
+    <string name="stem_shortcut_behavior">Bu hedef açılamazsa LibrePods varsayılan dijital asistanınızın açılmasını ister. LibrePods arka plandayken devam etmek için kısayol bildirimine dokunun; bildirimlerin etkin olması gerekir. Önce telefonunuzun kilidini açın. Android veya hedef uygulama açılmayı yine de engelleyebilir; sesli modun açılması garanti edilmez.</string>
+    <string name="stem_shortcut_assistant_behavior">Varsayılan dijital asistanınızın açılmasını ister. LibrePods arka plandayken devam etmek için kısayol bildirimine dokunun; bildirimlerin etkin olması gerekir. Önce telefonunuzun kilidini açın. Asistanın kullanılabilirliği telefon ayarlarınıza bağlıdır; sesli modun açılması garanti edilmez.</string>
+    <string name="stem_shortcut_android_action">Android eylemi</string>
+    <string name="stem_shortcut_camera">Kamerayı aç</string>
+    <string name="stem_shortcut_alarms">Alarmları göster</string>
+    <string name="stem_shortcut_none">Kayıtlı hedef yok. Varsayılan asistanın açılması istenecek.</string>
+    <string name="stem_shortcut_target_unavailable">Kullanılamıyor. Varsayılan asistanın açılması istenecek.</string>
+    <string name="stem_shortcut_change">Değiştirmek için dokunun</string>
+    <string name="stem_shortcut_try">Kısayolu dene</string>
+    <string name="stem_shortcut_loading">Kullanılabilir uygulamalar ve eylemler yükleniyor…</string>
+    <string name="stem_shortcut_load_failed">Kullanılabilir uygulamalar ve eylemler okunamadı. Tekrar deneyin.</string>
+    <string name="stem_shortcut_save_failed">Bu hedef kaydedilemedi. Tekrar deneyin.</string>
+    <string name="stem_shortcut_no_matches">Eşleşen kullanılabilir uygulama veya eylem yok.</string>
+    <string name="stem_shortcut_retry">Tekrar dene</string>
+    <string name="stem_shortcut_cancel">İptal</string>
+    <string name="stem_shortcut_left_notification">Sol kulaklık sapı kısayolu</string>
+    <string name="stem_shortcut_right_notification">Sağ kulaklık sapı kısayolu</string>
+    <string name="stem_shortcut_tap_notification">Telefonunuzun kilidini açıp devam etmek için dokunun.</string>
+    <string name="stem_shortcut_notifications_unavailable">Kısayolu çalıştırmak için LibrePods’u açın veya telefon ayarlarından Kulaklık sapı kısayolları bildirimlerini etkinleştirin.</string>
+    <string name="stem_shortcut_preparing">Kulaklık sapı kısayolu isteniyor…</string>
+    <string name="stem_shortcut_expired">Bu kısayol isteğinin süresi doldu veya ayarları değişti. Kulaklık sapına tekrar basın.</string>
+    <string name="stem_shortcut_unlock">Telefonunuzun kilidini açıp kısayolu tekrar deneyin.</string>
+    <string name="stem_shortcut_assistant_unavailable">Dijital asistan açılamadı. Telefonunuzun Varsayılan uygulamalar ayarlarından bir asistan seçip tekrar deneyin.</string>
+    <string name="stem_shortcut_fallback_requested">Kısayol kullanılamıyor. Varsayılan asistanın açılması istendi; açıldığı doğrulanmadı.</string>
+</resources>

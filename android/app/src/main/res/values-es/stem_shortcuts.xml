@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="stem_shortcuts_title">Atajos al presionar</string>
+    <string name="stem_shortcut_custom">Aplicación o atajo</string>
+    <string name="stem_shortcut_choose">Elegir una aplicación o un atajo</string>
+    <string name="stem_shortcut_search">Buscar aplicaciones y acciones</string>
+    <string name="stem_shortcut_supported">Elige una aplicación instalada o una de las acciones de Android disponibles abajo. Los accesos directos de cada aplicación en la pantalla de inicio no están disponibles aquí. Si el destino no está disponible, LibrePods solicitará tu asistente predeterminado.</string>
+    <string name="stem_shortcut_behavior">Si no se puede abrir este destino, LibrePods solicitará tu asistente digital predeterminado. Cuando LibrePods esté en segundo plano, toca la notificación del atajo para continuar; las notificaciones deben estar activadas. Desbloquea primero el teléfono. Android o la aplicación de destino aún pueden impedir que se abra; el modo de voz no está garantizado.</string>
+    <string name="stem_shortcut_assistant_behavior">Solicita tu asistente digital predeterminado. Cuando LibrePods esté en segundo plano, toca la notificación del atajo para continuar; las notificaciones deben estar activadas. Desbloquea primero el teléfono. La disponibilidad del asistente depende de los ajustes del teléfono; el modo de voz no está garantizado.</string>
+    <string name="stem_shortcut_android_action">Acción de Android</string>
+    <string name="stem_shortcut_camera">Abrir cámara</string>
+    <string name="stem_shortcut_alarms">Mostrar alarmas</string>
+    <string name="stem_shortcut_none">No hay ningún destino guardado. Se solicitará el asistente predeterminado.</string>
+    <string name="stem_shortcut_target_unavailable">No disponible. Se solicitará el asistente predeterminado.</string>
+    <string name="stem_shortcut_change">Toca para cambiar</string>
+    <string name="stem_shortcut_try">Probar atajo</string>
+    <string name="stem_shortcut_loading">Cargando aplicaciones y acciones disponibles…</string>
+    <string name="stem_shortcut_load_failed">No se pudieron leer las aplicaciones y acciones disponibles. Inténtalo de nuevo.</string>
+    <string name="stem_shortcut_save_failed">No se pudo guardar este destino. Inténtalo de nuevo.</string>
+    <string name="stem_shortcut_no_matches">No hay aplicaciones ni acciones disponibles que coincidan.</string>
+    <string name="stem_shortcut_retry">Reintentar</string>
+    <string name="stem_shortcut_cancel">Cancelar</string>
+    <string name="stem_shortcut_left_notification">Atajo del auricular izquierdo</string>
+    <string name="stem_shortcut_right_notification">Atajo del auricular derecho</string>
+    <string name="stem_shortcut_tap_notification">Desbloquea el teléfono y toca para continuar.</string>
+    <string name="stem_shortcut_notifications_unavailable">Abre LibrePods para ejecutar el atajo o activa sus notificaciones de «Atajos al presionar» en los ajustes del teléfono.</string>
+    <string name="stem_shortcut_preparing">Solicitando el atajo del auricular…</string>
+    <string name="stem_shortcut_expired">Esta solicitud de atajo ha caducado o sus ajustes han cambiado. Vuelve a presionar la parte alargada del AirPod.</string>
+    <string name="stem_shortcut_unlock">Desbloquea el teléfono y vuelve a probar el atajo.</string>
+    <string name="stem_shortcut_assistant_unavailable">No se pudo abrir un asistente digital. Elige uno en los ajustes de Aplicaciones predeterminadas del teléfono e inténtalo de nuevo.</string>
+    <string name="stem_shortcut_fallback_requested">Atajo no disponible. Se ha solicitado el asistente predeterminado; no se ha confirmado que se haya abierto.</string>
+</resources>

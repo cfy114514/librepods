@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="stem_shortcuts_title">Atalhos na haste</string>
+    <string name="stem_shortcut_custom">Aplicativo ou atalho</string>
+    <string name="stem_shortcut_choose">Escolher aplicativo ou atalho</string>
+    <string name="stem_shortcut_search">Buscar aplicativos e ações</string>
+    <string name="stem_shortcut_supported">Escolha um aplicativo instalado ou uma das ações do Android disponíveis abaixo. Os atalhos específicos dos aplicativos na tela inicial não estão disponíveis aqui. Se o destino estiver indisponível, o LibrePods solicitará seu assistente padrão.</string>
+    <string name="stem_shortcut_behavior">Se este destino não puder ser aberto, o LibrePods solicitará seu assistente digital padrão. Quando o LibrePods estiver em segundo plano, toque na notificação do atalho para continuar; as notificações precisam estar ativadas. Desbloqueie o celular primeiro. O Android ou o aplicativo de destino ainda podem impedir a abertura; o modo de voz não é garantido.</string>
+    <string name="stem_shortcut_assistant_behavior">Solicita seu assistente digital padrão. Quando o LibrePods estiver em segundo plano, toque na notificação do atalho para continuar; as notificações precisam estar ativadas. Desbloqueie o celular primeiro. A disponibilidade do assistente depende das configurações do celular; o modo de voz não é garantido.</string>
+    <string name="stem_shortcut_android_action">Ação do Android</string>
+    <string name="stem_shortcut_camera">Abrir câmera</string>
+    <string name="stem_shortcut_alarms">Mostrar alarmes</string>
+    <string name="stem_shortcut_none">Nenhum destino salvo. O assistente padrão será solicitado.</string>
+    <string name="stem_shortcut_target_unavailable">Indisponível. O assistente padrão será solicitado.</string>
+    <string name="stem_shortcut_change">Toque para alterar</string>
+    <string name="stem_shortcut_try">Testar atalho</string>
+    <string name="stem_shortcut_loading">Carregando aplicativos e ações disponíveis…</string>
+    <string name="stem_shortcut_load_failed">Não foi possível ler os aplicativos e ações disponíveis. Tente novamente.</string>
+    <string name="stem_shortcut_save_failed">Não foi possível salvar este destino. Tente novamente.</string>
+    <string name="stem_shortcut_no_matches">Nenhum aplicativo ou ação disponível corresponde à busca.</string>
+    <string name="stem_shortcut_retry">Tentar novamente</string>
+    <string name="stem_shortcut_cancel">Cancelar</string>
+    <string name="stem_shortcut_left_notification">Atalho da haste esquerda</string>
+    <string name="stem_shortcut_right_notification">Atalho da haste direita</string>
+    <string name="stem_shortcut_tap_notification">Desbloqueie o celular e toque para continuar.</string>
+    <string name="stem_shortcut_notifications_unavailable">Abra o LibrePods para executar o atalho ou ative as notificações de Atalhos na haste nas configurações do celular.</string>
+    <string name="stem_shortcut_preparing">Solicitando atalho da haste…</string>
+    <string name="stem_shortcut_expired">Esta solicitação de atalho expirou ou suas configurações foram alteradas. Pressione a haste novamente.</string>
+    <string name="stem_shortcut_unlock">Desbloqueie o celular e tente usar o atalho novamente.</string>
+    <string name="stem_shortcut_assistant_unavailable">Não foi possível abrir um assistente digital. Escolha um nas configurações de Aplicativos padrão do celular e tente novamente.</string>
+    <string name="stem_shortcut_fallback_requested">Atalho indisponível. O assistente padrão foi solicitado; a abertura não foi confirmada.</string>
+</resources>
