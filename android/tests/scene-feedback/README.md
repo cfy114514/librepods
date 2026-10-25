@@ -26,7 +26,7 @@ identify the tested source when a development worktree has uncommitted changes.
 All compilation output and mutated copies are removed on exit. Use
 `--case case_name` to run one named case.
 
-The 31 integration cases check these contracts:
+The 32 integration cases check these contracts:
 
 - Outgoing writes and ordinary optimistic cache/listener notifications cannot
   produce incoming device reports or advance the receive watermark.
@@ -55,6 +55,7 @@ The 31 integration cases check these contracts:
 - Connection replacement, session reset, manual edits and superseding attempts
   invalidate earlier work and callbacks. An unresolved same-setting retry stays
   unconfirmed in the same connection because AACP has no transaction IDs.
+  Temporary context loss and selection-only changes do not clear that history.
 - Real model capability and premium policies omit unsupported settings and hide
   unsupported scenes.
 

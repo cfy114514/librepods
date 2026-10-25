@@ -110,6 +110,12 @@ private class SceneWire(val wire: ControlledWire = ControlledWire()) : Closeable
         controller.setContext(context)
     }
 
+    fun loseAndRestoreContext(selectionChanges: Boolean) {
+        controller.setContext(null)
+        if (selectionChanges) context = context.copy(selection = context.selection + 1)
+        controller.setContext(context)
+    }
+
     override fun close() { registration.close() }
 }
 
@@ -294,6 +300,19 @@ private fun unresolvedRetryCannotClaimEarlierReply() = SceneWire().use { scene -
     scene.expectStatus(SceneSettingStatus.APPLIED, "New session clears earlier ambiguity")
 }
 
+private fun temporaryContextLossCannotEraseSameTransportUncertainty() {
+    for (selectionChanges in listOf(false, true)) SceneWire().use { scene ->
+        expect(scene.write(scene.queue().single()), "Initial request written on current transport")
+        scene.expire()
+        scene.loseAndRestoreContext(selectionChanges)
+        expect(scene.write(scene.queue().single()), "Retry after temporary context loss written")
+        scene.report()
+        scene.expectStatus(SceneSettingStatus.UNCONFIRMED,
+            "Temporary context loss or selection-only change cannot make an old report attributable")
+        expect(scene.result().detail == SceneResultDetail.EARLIER_REQUEST_UNRESOLVED, "Same transport retains unresolved request history")
+    }
+}
+
 private fun supersedingAttemptRetiresUnsentCallbacks() = SceneWire().use { scene ->
     val old = scene.queue().single()
     val next = scene.queue().single()
@@ -370,6 +389,7 @@ internal fun sceneIntegrationCases(): List<IntegrationCase> = listOf(
     "socket_replacement_during_flush_cannot_apply" to { replacementDuringFlushCannotApply(false) },
     "replacement_while_queued_never_writes" to ::replacementWhileQueuedNeverWrites,
     "unresolved_retry_cannot_claim_earlier_reply" to ::unresolvedRetryCannotClaimEarlierReply,
+    "temporary_context_loss_preserves_same_transport_uncertainty" to ::temporaryContextLossCannotEraseSameTransportUncertainty,
     "superseding_attempt_retires_unsent_callbacks" to ::supersedingAttemptRetiresUnsentCallbacks,
     "manual_change_retires_scene_confirmation" to ::manualChangeRetiresSceneConfirmation,
     "replacement_during_dispatch_callback_preserves_retry_uncertainty" to ::replacementDuringDispatchCallbackPreservesRetryUncertainty,
