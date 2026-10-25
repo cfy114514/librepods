@@ -50,14 +50,18 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.statusBars
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.verticalScroll
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialShapes
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
 import androidx.compose.material3.ripple
 import androidx.compose.material3.toPath
 import androidx.compose.runtime.Composable
@@ -103,12 +107,15 @@ import me.kavishdevar.librepods.R
 import me.kavishdevar.librepods.bluetooth.AACPManager
 import me.kavishdevar.librepods.bluetooth.ATTHandles
 import me.kavishdevar.librepods.data.Capability
+import me.kavishdevar.librepods.data.ConnectionHealthSnapshot
 import me.kavishdevar.librepods.data.SceneApplyState
 import me.kavishdevar.librepods.data.ScenePresetId
 import me.kavishdevar.librepods.presentation.MaterialIcons
 import me.kavishdevar.librepods.presentation.components.AboutCard
 import me.kavishdevar.librepods.presentation.components.AudioSettings
 import me.kavishdevar.librepods.presentation.components.BatteryView
+import me.kavishdevar.librepods.presentation.components.BatterySessionCard
+import me.kavishdevar.librepods.presentation.components.ObservedConnectionHealthCard
 import me.kavishdevar.librepods.presentation.components.CallControlSettings
 import me.kavishdevar.librepods.presentation.components.ConnectionSettings
 import me.kavishdevar.librepods.presentation.components.HearingHealthSettings
@@ -211,7 +218,9 @@ fun AirPodsSettingsRoute(
             activateDemoMode = viewModel::activateDemoMode,
             reconnectFromSavedMac = viewModel::reconnectFromSavedMac,
             sceneApplication = sceneApplication,
-            onApplyScenePreset = viewModel::applyScenePreset
+            onApplyScenePreset = viewModel::applyScenePreset,
+            insightsEnabled = viewModel.deviceInsightsEnabled,
+            readConnectionHealth = viewModel::captureConnectionHealth
         )
     }
 }
@@ -260,8 +269,11 @@ fun AirPodsSettingsScreen(
         navigateToBatteryHistory: () -> Unit = {},
         sceneApplication: SceneApplyState = SceneApplyState(),
         onApplyScenePreset: (ScenePresetId) -> Unit = {},
+        insightsEnabled: Boolean = false,
+        readConnectionHealth: () -> ConnectionHealthSnapshot? = { null },
 ) {
     var showScenePresets by remember { mutableStateOf(false) }
+    var showConnectionHealth by remember(state.selectedPeerVersion, state.serviceBindingId) { mutableStateOf(false) }
     val context = LocalContext.current
     val sharedPreferences = context.getSharedPreferences("settings", MODE_PRIVATE)
     var deviceName by remember {
@@ -291,6 +303,26 @@ fun AirPodsSettingsScreen(
     if (showScenePresets) {
         ScenePresetsDialog(state.capabilities, state.isPremium, state.canApplyScenePresets,
             sceneApplication, onApplyScenePreset, onDismiss = { showScenePresets = false })
+    }
+
+    if (showConnectionHealth && insightsEnabled) {
+        AlertDialog(onDismissRequest = { showConnectionHealth = false },
+            text = {
+                Column(Modifier.heightIn(max = 560.dp).verticalScroll(rememberScrollState())) {
+                    ObservedConnectionHealthCard(
+                        selectedPeer = state.selectedPeer ?: sharedPreferences.getString("mac_address", null),
+                        selectionVersion = state.selectedPeerVersion,
+                        serviceBindingId = state.serviceBindingId,
+                        readService = readConnectionHealth,
+                        onOpenDiagnostics = if (BuildConfig.PLAY_BUILD) null else ({
+                            navigateToTroubleshooting()
+                            showConnectionHealth = false
+                        }))
+                }
+            },
+            confirmButton = {
+                TextButton(onClick = { showConnectionHealth = false }) { Text(stringResource(android.R.string.ok)) }
+            })
     }
 
     if (state.isLocallyConnected) {
@@ -349,6 +381,12 @@ fun AirPodsSettingsScreen(
             }
             item(key = "spacer_battery") {
                 Spacer(modifier = Modifier.height(32.dp))
+            }
+            if (insightsEnabled) {
+                item(key = "battery_session") {
+                    BatterySessionCard(address = state.selectedPeer ?: "")
+                    Spacer(Modifier.height(16.dp))
+                }
             }
 
             item(key = "name") {
@@ -540,6 +578,14 @@ fun AirPodsSettingsScreen(
                     automaticConnectionEnabled = state.automaticConnectionEnabled,
                     onAutomaticConnectionChanged = onAutomaticConnectionChanged
                 )
+            }
+            if (insightsEnabled) {
+                item(key = "connection_health") {
+                    Spacer(Modifier.height(16.dp))
+                    ObservedConnectionHealthCard(state.selectedPeer, state.selectedPeerVersion,
+                        state.serviceBindingId, readConnectionHealth,
+                        onOpenDiagnostics = if (BuildConfig.PLAY_BUILD) null else navigateToTroubleshooting)
+                }
             }
 
             if (capabilities.contains(Capability.STEM_CONFIG)) {
@@ -926,6 +972,9 @@ fun AirPodsSettingsScreen(
                                 }
                             }
                             BatteryHistoryPreview(onClick = navigateToBatteryHistory)
+                            if (insightsEnabled) TextButton(onClick = { showConnectionHealth = true }) {
+                                Text(stringResource(R.string.connection_health_open))
+                            }
                         }
 
                         if (!BuildConfig.PLAY_BUILD) {
@@ -1004,6 +1053,9 @@ fun AirPodsSettingsScreen(
                             }
                         }
                         BatteryHistoryPreview(onClick = navigateToBatteryHistory)
+                        if (insightsEnabled) TextButton(onClick = { showConnectionHealth = true }) {
+                            Text(stringResource(R.string.connection_health_open))
+                        }
                     }
 
                     if (!BuildConfig.PLAY_BUILD) {

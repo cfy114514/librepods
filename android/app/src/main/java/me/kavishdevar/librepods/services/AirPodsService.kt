@@ -56,6 +56,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.ParcelUuid
+import android.os.SystemClock
 import android.os.UserHandle
 import android.provider.Settings
 import android.telecom.TelecomManager
@@ -104,6 +105,12 @@ import me.kavishdevar.librepods.data.Battery
 import me.kavishdevar.librepods.data.BatteryComponent
 import me.kavishdevar.librepods.data.BatteryStatus
 import me.kavishdevar.librepods.data.BatteryHistoryStore
+import me.kavishdevar.librepods.data.BatterySessionRepository
+import me.kavishdevar.librepods.data.BatterySessionStore
+import me.kavishdevar.librepods.data.ConnectionHealthSnapshot
+import me.kavishdevar.librepods.data.HealthAudioProfile
+import me.kavishdevar.librepods.data.HealthProfileState
+import me.kavishdevar.librepods.data.recordBatterySessionPacket
 import me.kavishdevar.librepods.data.canRecordBleBattery
 import me.kavishdevar.librepods.data.isAvailableReading
 import me.kavishdevar.librepods.data.systemHeadsetBatteryLevel
@@ -432,6 +439,21 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private val a2dpWatch = java.util.concurrent.atomic.AtomicReference<A2dpWatch?>()
     private val profileActionCurrent = ThreadLocal<() -> Boolean>()
     private lateinit var batteryHistory: BatteryHistoryStore
+    private lateinit var batterySessionLease: BatterySessionRepository.Lease
+    private val connectionHealth = serviceResources.track(ConnectionHealthMonitor(SystemClock::elapsedRealtime))
+    private inner class ControlObservations(
+        val socket: BluetoothSocket,
+        val battery: BatterySessionRepository.Connection?,
+        val health: ConnectionHealthMonitor.ControlTicket?
+    ) : Closeable {
+        override fun close() {
+            battery?.close()
+            health?.let(connectionHealth::controlClosed)
+        }
+    }
+    private data class ReceivedControlObservations(val binding: ControlObservations, val receivedAt: Long)
+    private val ownedControlObservations = java.util.concurrent.atomic.AtomicReference<ControlObservations?>()
+    private val receivedControlObservations = ThreadLocal<ReceivedControlObservations>()
     private var lastBleBatteryStatus: BLEManager.AirPodsStatus? = null
     private val packetSourceSocket = ThreadLocal<BluetoothSocket>()
 
@@ -592,6 +614,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
         sharedPreferences = getSharedPreferences("settings", MODE_PRIVATE)
         batteryHistory = BatteryHistoryStore(this, writable = true)
+        batterySessionLease = BatterySessionStore.claim()
+        connectionHealth.selectPeer(sharedPreferences.getString("mac_address", null))
         initializeConfig()
         refreshCachedInformation()
 
@@ -1017,6 +1041,10 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             @SuppressLint("MissingPermission")
             override fun onBatteryInfoReceived(batteryInfo: ByteArray) {
                 val owner = currentPacketPeer() ?: return
+                receivedControlObservations.get()?.let { received ->
+                    // This token was captured by the originating socket, never from current UI/cache state.
+                    recordBatterySessionPacket(received.binding.battery, batteryInfo, received.receivedAt)
+                }
                 batteryNotification.setBattery(batteryInfo)
                 if (batteryInfo.size == 22) {
                     batteryHistory.record(owner, listOf(7, 12, 17).map { offset ->
@@ -1373,6 +1401,59 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) return null
         val address = source.remoteDevice.address
         return address.takeIf { it.equals(sharedPreferences.getString("mac_address", ""), ignoreCase = true) }
+    }
+
+    /** No profile acquisition or reconnect: only a response from this live bound service. */
+    internal fun captureConnectionHealth(): ConnectionHealthSnapshot? {
+        if (serviceResources.isClosed || ServiceManager.getService() !== this) return null
+        deviceObservationAvailable()
+        return connectionHealth.snapshot()
+    }
+
+    /** Retire a segment when permission/adapter loss is actually observed, including by battery UI. */
+    internal fun deviceObservationAvailable(): Boolean {
+        if (serviceResources.isClosed || ServiceManager.getService() !== this) return false
+        val permitted = checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) == PackageManager.PERMISSION_GRANTED
+        @SuppressLint("MissingPermission")
+        val enabled = if (permitted) runCatching {
+            getSystemService(BluetoothManager::class.java)?.adapter?.isEnabled
+        }.getOrNull() else null
+        if (!permitted || enabled != true) invalidateConnectionObservations()
+        return permitted && enabled == true
+    }
+
+    private fun invalidateConnectionObservations() {
+        synchronized(BluetoothConnectionManager) {
+            ownedControlObservations.getAndSet(null)?.close()
+            connectionHealth.invalidateBluetooth()
+        }
+    }
+
+    private fun healthProfile(profile: Int): HealthAudioProfile? = when (profile) {
+        BluetoothProfile.A2DP -> HealthAudioProfile.MEDIA
+        BluetoothProfile.HEADSET -> HealthAudioProfile.CALLS
+        else -> null
+    }
+
+    private fun healthProfileState(state: Int): HealthProfileState? = when (state) {
+        BluetoothProfile.STATE_CONNECTED -> HealthProfileState.CONNECTED
+        BluetoothProfile.STATE_CONNECTING -> HealthProfileState.CONNECTING
+        BluetoothProfile.STATE_DISCONNECTED -> HealthProfileState.DISCONNECTED
+        BluetoothProfile.STATE_DISCONNECTING -> HealthProfileState.DISCONNECTING
+        else -> null
+    }
+
+    /** Observe an already-required query without adding Binder calls or profile registrations. */
+    @SuppressLint("MissingPermission")
+    private fun observedProfileConnectionState(proxy: BluetoothProfile, target: BluetoothDevice, profile: Int): Int {
+        val selection = connectionHealth.selection()?.takeIf { it.peer.equals(target.address, true) }
+        val kind = healthProfile(profile)
+        val ticket = if (selection != null && kind != null)
+            connectionHealth.beginProfileObservation(selection, kind) else null
+        val state = try { proxy.getConnectionState(target) }
+        catch (error: SecurityException) { invalidateConnectionObservations(); throw error }
+        if (ticket != null) healthProfileState(state)?.let { connectionHealth.profileObserved(ticket, it) }
+        return state
     }
 
     @SuppressLint("MissingPermission")
@@ -1815,6 +1896,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 manualConnectionGeneration.incrementAndGet()
                 val previousHeadPeer = me.kavishdevar.librepods.data.batteryHistoryIdentity(macAddress)
                 macAddress = preferences.getString(key, "") ?: ""
+                connectionHealth.selectPeer(macAddress)
                 if (previousHeadPeer != me.kavishdevar.librepods.data.batteryHistoryIdentity(macAddress)) HeadTracking.reset()
                 headTrackingSession.selectPeer(me.kavishdevar.librepods.data.batteryHistoryIdentity(macAddress))
                 appliedHeadTrackingRequest = null
@@ -2152,6 +2234,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
         try {
             startForeground(1, notification)
+            connectionHealth.started()
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -2698,19 +2781,34 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private val bluetoothReceiver = object : BroadcastReceiver() {
         @SuppressLint("MissingPermission")
         override fun onReceive(context: Context?, intent: Intent) {
-            val target = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java) ?: return
             val action = intent.action ?: return
             if (serviceResources.isClosed) return
+            // Adapter state broadcasts have no EXTRA_DEVICE. Retire evidence before extracting it.
+            if (action == BluetoothAdapter.ACTION_STATE_CHANGED) {
+                if (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR) != BluetoothAdapter.STATE_ON)
+                    invalidateConnectionObservations()
+                return
+            }
+            if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                invalidateConnectionObservations()
+                return
+            }
+            val target = intent.getParcelableExtra(BluetoothDevice.EXTRA_DEVICE, BluetoothDevice::class.java) ?: return
             when (action) {
                 BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED, BluetoothHeadset.ACTION_CONNECTION_STATE_CHANGED -> {
+                    val profile = if (action == BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED) BluetoothProfile.A2DP else BluetoothProfile.HEADSET
+                    val selection = connectionHealth.selection()
+                    val observed = healthProfileState(intent.getIntExtra(BluetoothProfile.EXTRA_STATE, -1))
+                    if (selection != null && observed != null && target.address.equals(selection.peer, true)) {
+                        healthProfile(profile)?.let { connectionHealth.profileChanged(selection, it, observed) }
+                    }
                     if (intent.getIntExtra(BluetoothProfile.EXTRA_STATE, -1) == BluetoothProfile.STATE_CONNECTED) {
-                        val profile = if (action == BluetoothA2dp.ACTION_CONNECTION_STATE_CHANGED) BluetoothProfile.A2DP else BluetoothProfile.HEADSET
                         if (isKnownAirPods(target)) {
                             val changed = intent.getIntExtra(BluetoothProfile.EXTRA_PREVIOUS_STATE, -1) != BluetoothProfile.STATE_CONNECTED
                             attachControlIfAudioConnected(target, freshProfile = profile.takeIf { changed })
                         } else if (target.uuids == null) {
                             withAudioProfile(this@AirPodsService, profile, AudioProfileAction.SDP) { proxy ->
-                                if (proxy.getConnectionState(target) == BluetoothProfile.STATE_CONNECTED && isCurrentProfileAction()) target.fetchUuidsWithSdp()
+                                if (observedProfileConnectionState(proxy, target, profile) == BluetoothProfile.STATE_CONNECTED && isCurrentProfileAction()) target.fetchUuidsWithSdp()
                             }
                         }
                     }
@@ -2986,7 +3084,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         }
         for (profile in listOf(BluetoothProfile.A2DP, BluetoothProfile.HEADSET)) {
             withAudioProfile(this, profile, AudioProfileAction.ATTACH) { proxy ->
-                if (proxy.getConnectionState(target) == BluetoothProfile.STATE_CONNECTED) {
+                if (observedProfileConnectionState(proxy, target, profile) == BluetoothProfile.STATE_CONNECTED) {
                     if (freshProfile == profile && isCurrentProfileAction()) audioProfileOwnership.localProfileConnected(target.address, profile)
                     attachControlDevice(target)
                 }
@@ -3061,11 +3159,16 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         var socket: BluetoothSocket? = null
         val pendingAttSocket = java.util.concurrent.atomic.AtomicReference<BluetoothSocket?>()
         var handedToReader = false
+        var observations: ControlObservations? = null
         var packetGeneration = -1L
         val connectionPhaseFinished = AtomicBoolean(false)
         var timeoutJob: kotlinx.coroutines.Job? = null
 
         fun closeAttempt(notifyDisconnect: Boolean = false) {
+            observations?.let { captured ->
+                ownedControlObservations.compareAndSet(captured, null)
+                captured.close()
+            }
             // Potentially blocking close stays outside the publication lock.
             attempt.close()
             serviceResources.release(attempt)
@@ -3132,6 +3235,11 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     BluetoothConnectionManager.attSocket = null
                     ownedControlSocket.set(connectedSocket)
                     ownedAttSocket.set(null)
+                    val healthSelection = connectionHealth.selection()?.takeIf { it.peer.equals(device.address, true) }
+                    observations = ControlObservations(connectedSocket, batterySessionLease.connect(device.address),
+                        healthSelection?.let(connectionHealth::controlOpened)).also {
+                        ownedControlObservations.getAndSet(it)?.close()
+                    }
                     this@AirPodsService.device = device
                 }
             }
@@ -3203,6 +3311,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     val buffer = ByteArray(1024)
                     while (isActive && isCurrentConnection() && connectedSocket.isConnected) {
                         val bytesRead = connectedSocket.inputStream.read(buffer)
+                        val receivedAt = SystemClock.elapsedRealtime()
                         if (bytesRead == -1) break
                         if (bytesRead > 0 && isCurrentConnection()) {
                             val data = buffer.copyOfRange(0, bytesRead)
@@ -3210,11 +3319,21 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                             // raw-data broadcast had no consumers and caused IPC per sample.
                             // Notifications change on connection/name/battery events, not sensor samples.
                             packetSourceSocket.set(connectedSocket)
+                            observations?.let { captured ->
+                                receivedControlObservations.set(ReceivedControlObservations(captured, receivedAt))
+                                synchronized(BluetoothConnectionManager) {
+                                    if (ownedControlObservations.get() === captured && isCurrentControlSocket(connectedSocket))
+                                        captured.health?.let(connectionHealth::controlPacket)
+                                }
+                            }
                             try {
                                 aacpManager.receivePacket(data, packetGeneration) {
                                     isCurrentConnection() && isCurrentControlSocket(connectedSocket)
                                 }
-                            } finally { packetSourceSocket.remove() }
+                            } finally {
+                                packetSourceSocket.remove()
+                                receivedControlObservations.remove()
+                            }
                             if (!isHeadTrackingData(data)) logPacket(data, "AirPods")
                         }
                     }
@@ -3290,6 +3409,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     /** Called by the retiring connection while holding the publication lock. */
     private fun finishControlDisconnection() {
+        ownedControlObservations.getAndSet(null)?.close()
         device = null
         aacpManager.disconnected()
         updateNotificationContent(false)
@@ -3304,6 +3424,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     fun disconnectForCD() {
         revokeAudioRestore(ownershipLost = true)
+        synchronized(BluetoothConnectionManager) { ownedControlObservations.getAndSet(null)?.close() }
         BluetoothConnectionManager.aacpSocket?.close()
         MediaController.pausedWhileTakingOver = false
         Log.d(TAG, "Disconnected from AirPods, showing island.")
@@ -3572,7 +3693,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             withAudioProfile(context, profile, AudioProfileAction.POLICY,
                 canEnqueue = { audioProfileOwnership.isCurrent(ticket) }) { proxy ->
                 audioProfileOwnership.withCurrent(ticket, profile, { audioOperationValid(target, ticket, socket) }) {
-                    if (proxy.getConnectionState(target) == BluetoothProfile.STATE_CONNECTED &&
+                    if (observedProfileConnectionState(proxy, target, profile) == BluetoothProfile.STATE_CONNECTED &&
                         isCurrentProfileAction() && audioOperationValid(target, ticket, socket)) {
                         audioProfileOwnership.applyReleasePolicy(ticket, profile,
                             { isCurrentProfileAction() && audioOperationValid(target, ticket, socket) }) {
@@ -3645,7 +3766,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                     if (!enteredOperation && playWhenConnected && profile == BluetoothProfile.A2DP &&
                         ticket.operation == AudioProfileOwnership.Operation.RESTORE && audioProfileOwnership.isCurrent(ticket) &&
                         isCurrentProfileAction() && canConnect() && audioOperationValid(target, ticket, socket) &&
-                        proxy.getConnectionState(target) == BluetoothProfile.STATE_CONNECTED &&
+                        observedProfileConnectionState(proxy, target, profile) == BluetoothProfile.STATE_CONNECTED &&
                         audioProfileOwnership.isCurrent(ticket) && isCurrentProfileAction() && canConnect() &&
                         audioOperationValid(target, ticket, socket)) MediaController.sendPlay()
                     // MediaController may call takeOver while holding its own lock. Keep its lock
@@ -3712,6 +3833,9 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     @SuppressLint("MissingPermission")
     override fun onDestroy() {
+        ownedControlObservations.getAndSet(null)?.close()
+        if (::batterySessionLease.isInitialized) batterySessionLease.close()
+        connectionHealth.close()
         notificationLease?.close()
         notificationLease = null
         synchronized(renameBindingLock) { desiredRename = null; appliedRename = null }

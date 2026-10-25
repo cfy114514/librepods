@@ -344,6 +344,17 @@ class AirPodsViewModel(
 
     val uiState: StateFlow<AirPodsUiState> = _uiState
 
+    internal val deviceInsightsEnabled: Boolean get() = !isDemoMode
+
+    internal fun captureConnectionHealth(): me.kavishdevar.librepods.data.ConnectionHealthSnapshot? {
+        if (isDemoMode || !::service.isInitialized) return null
+        val owner = service
+        if (ServiceManager.getService() !== owner) return null
+        return owner.captureConnectionHealth()?.takeIf {
+            !isDemoMode && service === owner && ServiceManager.getService() === owner
+        }
+    }
+
     @Volatile private var isDemoMode = false
 
     private val listeners =
