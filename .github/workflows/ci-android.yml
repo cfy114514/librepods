@@ -144,6 +144,12 @@ jobs:
             2>&1 | tee build/ci-stem-dispatch.log
           python3 tests/observation-read/run.py \
             2>&1 | tee build/ci-observation-read.log
+          python3 tests/popup-window/run.py \
+            2>&1 | tee build/ci-popup-window.log
+          python3 tests/island-receiver/run.py \
+            2>&1 | tee build/ci-island-receiver.log
+          python3 tests/popup-trigger/run.py \
+            2>&1 | tee build/ci-popup-trigger.log
 
       - name: Run Android Lint
         id: lint
