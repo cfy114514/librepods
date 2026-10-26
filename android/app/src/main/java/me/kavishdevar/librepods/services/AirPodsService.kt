@@ -2176,7 +2176,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         val irk = sharedPreferences.getString("IRK", null)
         serviceScope.launch(Dispatchers.Main.immediate) {
             if (popupShown || generation != popupGeneration.get() || serviceResources.isClosed ||
-                ServiceManager.getService() !== this || !bleScanningRequested ||
+                ServiceManager.getService() !== this@AirPodsService || !bleScanningRequested ||
                 selectedAddress != sharedPreferences.getString("mac_address", null) ||
                 irk != sharedPreferences.getString("IRK", null) ||
                 !sharedPreferences.getBoolean("show_bottom_sheet_popup", true) ||
