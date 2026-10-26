@@ -2886,6 +2886,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
                 updateBleScanning(enabled)
                 if (!enabled) {
                     dismissPopup()
+                    // Stopping the scanner also stops its eventual presence timeout.
+                    expireBlePresence()
                     invalidateConnectionObservations()
                 }
                 return

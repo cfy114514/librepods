@@ -57,3 +57,9 @@ This does not exercise Android scan timing, Binder, native socket I/O, profile
 acquisition by the framework, real coroutine thread scheduling, or notification
 rendering. The saved reconnect's control-attempt completion is supplied by the
 harness. Connection-attempt and pending-acquisition bookkeeping have separate unit tests.
+
+Adapter-stop integration also extracts the real `ACTION_STATE_CHANGED` branch.
+Stopping scanning retires socketless BLE automatic sources and speculative claims;
+explicit audio requests and a live control source retain their existing semantics.
+Four cases cover those boundaries. The pre-integration service snapshot compiles
+and fails the two automatic-source cases, proving the adapter path is exercised.

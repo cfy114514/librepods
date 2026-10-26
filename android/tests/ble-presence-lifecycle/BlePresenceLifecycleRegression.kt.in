@@ -48,7 +48,11 @@ class BluetoothProfile(val id: Int) {
 private class BluetoothAdapter {
     val bondedDevices = setOf(BluetoothDevice(PEER))
     fun getRemoteDevice(address: String) = BluetoothDevice(address)
-    companion object { fun checkBluetoothAddress(address: String) = address.count { it == ':' } == 5 }
+    companion object {
+        fun checkBluetoothAddress(address: String) = address.count { it == ':' } == 5
+        const val ACTION_STATE_CHANGED = "adapter"; const val EXTRA_STATE = "state"
+        const val STATE_ON = 12; const val STATE_OFF = 10; const val ERROR = -1
+    }
 }
 private class BluetoothManager { val adapter = BluetoothAdapter() }
 private object BluetoothConnectionManager { var aacpSocket: BluetoothSocket? = null }
@@ -166,7 +170,10 @@ private class Watch(val ticket: AudioProfileOwnership.Ticket, val receiver: Broa
 }
 private object MediaController { var pausedWhileTakingOver = false; fun sendPlay() = Unit }
 private object AirPodsNotifications { const val AIRPODS_DISCONNECTED = "disconnected" }
-private class Intent(val action: String) { fun setPackage(name: String) = this }
+private class Intent(val action: String, val state: Int = BluetoothAdapter.STATE_OFF) {
+    fun setPackage(name: String) = this
+    fun getIntExtra(key: String, fallback: Int) = state
+}
 
 private class AirPodsService : Context() {
 @@PROFILE_TYPE@@
@@ -247,6 +254,14 @@ private class AirPodsService : Context() {
 @@RETIRE@@
 @@WATCH@@
 
+    // Actual adapter branch; scanner/UI/diagnostic collaborators do not retire BLE presence.
+    private fun updateBleScanning(enabled: Boolean) = Unit
+    private fun invalidateConnectionObservations() = Unit
+    fun adapter(enabled: Boolean) {
+        val action = BluetoothAdapter.ACTION_STATE_CHANGED
+        val intent = Intent(action, if (enabled) BluetoothAdapter.STATE_ON else BluetoothAdapter.STATE_OFF)
+@@ADAPTER@@
+    }
     fun expire() = bleStatusListener.onDeviceDisappeared()
     fun observeDisconnected() = bleStatusListener.onDeviceStatusChanged(BLEManager.AirPodsStatus(), null)
     fun retireControl() { BluetoothConnectionManager.aacpSocket = null; finishControlDisconnection() }
@@ -603,6 +618,29 @@ fun main() {
         var actions = 0
         restore.profiles.forEach { profile -> ownership.withCurrent(restore, profile) { actions++ } }
         check(actions == 0 && ownership.beginRestore(PEER) == null)
+    }
+    scenario("adapter OFF retires queued BLE automatic socket source") { service ->
+        service.observeDisconnected()
+        val stale = service.autoSocketGuards.single()
+        check(stale()); service.adapter(false)
+        check(!stale()) { "Adapter-off scan retirement preserved obsolete BLE automatic source" }
+        check(service.audioProfileOwnership.beginRestore(PEER) == null) { "Adapter-off left speculative audio claim" }
+        service.adapter(true); service.observeDisconnected()
+        check(service.autoSocketGuards.last()() && !stale())
+    }
+    scenario("adapter OFF retires queued socketless automatic profile work") { service ->
+        service.captureTakeover(manual = false); check(service.queueTakeover())
+        service.adapter(false); service.dispatchProfiles()
+        check(service.connectionCount() == 0 && service.policyCount() == 0) { "Adapter-off dispatched stale automatic audio" }
+    }
+    scenario("adapter OFF preserves explicit audio request") { service ->
+        service.queueDirect(); service.adapter(false); expectBoth(service)
+    }
+    scenario("adapter OFF preserves live control source independently of BLE") { service ->
+        service.publishControl(); val current = service.captureTakeover(manual = false)
+        val generation = service.blePresenceGeneration.get()
+        service.adapter(false)
+        check(current() && service.blePresenceGeneration.get() == generation)
     }
     scenario("real socket publication protects the outer-guard to manager-lock gap") {
         me.kavishdevar.librepods.services.publication.runPublicationRaceRegressions()
