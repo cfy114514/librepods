@@ -561,6 +561,64 @@ private fun recreatedControllerObservesValuesWithoutDurableRequestHistory() = Sc
     scene.expectStatus(SceneSettingStatus.UNCONFIRMED, "Old controller cannot revive its expired attempt")
 }
 
+private fun actualManualPrefixRefreshesContextBeforeHistorySupersession() {
+    // First establish that the extracted adapter really supersedes every mapped scene
+    // setting when its context is current; an adapter that simply does nothing is invalid.
+    for (setting in SceneSetting.entries) SceneWire().use { scene ->
+        val preset = plan(SceneValue(setting, 2))
+        expect(scene.write(scene.queue(preset).single()), "Current-context scene setting sent")
+        scene.report(setting)
+        scene.expectStatus(SceneSettingStatus.APPLIED, "Current-context target was observed", setting)
+        val adapter = ExtractedManualSceneAdapter(scene.controller) { scene.context }
+        adapter.setControlCommandValue(setting.identifier(), byteArrayOf(1))
+        scene.expectStatus(SceneSettingStatus.UNCONFIRMED, "Actual manual prefix supersedes current-context setting", setting)
+        expect(scene.result(setting).detail == SceneResultDetail.SETTING_CHANGED,
+            "Current-context manual edit retains its actual retirement reason")
+        expect(!scene.state.connectionChanged, "An unchanged context is not a connection replacement")
+    }
+    for (change in listOf("same-MAC session", "selection", "unavailable")) SceneWire().use { scene ->
+        val preset = plan(SceneValue(SceneSetting.LISTENING_MODE, 2), SceneValue(SceneSetting.CONVERSATION_AWARENESS, 2))
+        scene.queue(preset).forEach { expect(scene.write(it), "Original scene setting sent before $change change") }
+        scene.report()
+        scene.expectStatus(SceneSettingStatus.APPLIED, "Historical target was observed before $change change")
+        val observed = scene.result()
+        var selection = scene.context.selection
+        var available = true
+        val adapter = ExtractedManualSceneAdapter(scene.controller) {
+            // Supply a live context observation, without notifying the controller first.
+            // Real AACP session generation supplies reconnect identity; selection/availability
+            // are controlled fixture inputs, not emulated Android broadcasts or permission APIs.
+            val socket = BluetoothConnectionManager.aacpSocket
+            if (available && socket?.isConnected == true) scene.context.copy(
+                selection = selection, deviceSession = scene.aacp.captureDeviceSession()) else null
+        }
+        when (change) {
+            "same-MAC session" -> {
+                scene.aacp.beginDeviceSession()
+                BluetoothConnectionManager.aacpSocket = WireSocket()
+                expect(scene.aacp.captureDeviceSession() != scene.context.deviceSession,
+                    "Actual AACP session generation changed while peer, selection and binding remain the same")
+            }
+            "selection" -> selection++
+            else -> available = false
+        }
+        expect(!scene.state.connectionChanged, "Controller has not received the $change notification")
+
+        // This signature, prefix, setting mapper and synchronizer come from the production
+        // ViewModel source. The fixture supplies no refresh/supersede ordering of its own.
+        adapter.setControlCommandValue(Identifier.LISTENING_MODE, byteArrayOf(3))
+        expect(scene.result() == observed,
+            "Actual manual prefix must refresh $change context before superseding historical observed result")
+        expect(scene.state.connectionChanged, "Manual prefix itself detects $change before its queued notification")
+        expect(scene.result(SceneSetting.CONVERSATION_AWARENESS).detail == SceneResultDetail.CONNECTION_CHANGED,
+            "Pending earlier setting is retired for the actual $change reason")
+        val history = scene.state
+        adapter.setControlCommandValue(Identifier.CONVERSATION_DETECT_CONFIG, byteArrayOf(1))
+        expect(scene.state == history, "Later manual prefix retains historical retirement reasons after $change")
+        expect(adapter.canApplyScenePresets == available, "Extracted synchronizer publishes current availability after $change")
+    }
+}
+
 private fun actualModelPolicyOmitsUnsupportedSceneOptions() {
     expect(scenePresetPlans(AirPods().capabilities, premium = true).isEmpty(), "Model without listening modes must not offer scenes")
     val oldPro = scenePresetPlans(AirPodsPro1().capabilities, premium = true)
@@ -605,5 +663,6 @@ internal fun sceneIntegrationCases(): List<IntegrationCase> = listOf(
     "unknown_multibyte_setting_report_cannot_confirm" to ::unknownMultiByteSettingReportCannotConfirm,
     "captured_old_report_cannot_cross_same_mac_session_reset" to ::capturedOldReportCannotCrossSameMacSessionReset,
     "recreated_controller_observes_without_durable_request_history" to ::recreatedControllerObservesValuesWithoutDurableRequestHistory,
+    "manual_prefix_refreshes_context_before_history_supersession" to ::actualManualPrefixRefreshesContextBeforeHistorySupersession,
     "actual_model_policy_omits_unsupported_scene_options" to ::actualModelPolicyOmitsUnsupportedSceneOptions,
 )

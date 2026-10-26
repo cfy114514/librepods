@@ -29,6 +29,53 @@ PRODUCTION_SOURCES = (
     "data/ScenePresets.kt",
     "data/ScenePresetController.kt",
 )
+SCENE_VIEWMODEL_SOURCE = "presentation/viewmodel/AirPodsViewModel.kt"
+
+
+def extracted_manual_scene_adapter(snapshot):
+    """Compile exact production method excerpts; fail closed when their boundaries change."""
+    text = snapshot[SCENE_VIEWMODEL_SOURCE].decode()
+
+    def between(start, end):
+        if text.count(start) != 1 or text.count(end) != 1:
+            raise ValueError(f"ViewModel scene extraction boundary changed between {start.strip()!r} and {end.strip()!r}; review the harness adapter")
+        begin = text.index(start)
+        finish = text.index(end)
+        if finish <= begin:
+            raise ValueError("ViewModel scene extraction boundaries are out of order")
+        return text[begin:finish]
+
+    # Preserve the actual manual-edit ordering, mapper and context publication. The remainder
+    # of setControlCommandValue sends a separate manual command and is outside this test.
+    manual_method = between("    fun setControlCommandValue(\n", "    private fun enqueueSetting(key: Int, packet: ByteArray) {\n")
+    prefix_end = "        val ownedValue = value.copyOf()\n"
+    if manual_method.count(prefix_end) != 1:
+        raise ValueError("ViewModel manual prefix boundary changed; review the harness adapter")
+    prefix = manual_method[:manual_method.index(prefix_end)]
+    mapper = between("    private fun sceneSetting(identifier: ControlCommandIdentifiers): SceneSetting? = when (identifier) {\n",
+                     "    private fun sceneIdentifier(setting: SceneSetting): ControlCommandIdentifiers = when (setting) {\n")
+    synchronize = between("    private fun synchronizeSceneContext() {\n", "    private fun observeSceneReports() {\n")
+    excerpts = prefix + "    }\n\n" + mapper + synchronize
+    wrapper = """package me.kavishdevar.librepods.bluetooth
+
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.update
+import me.kavishdevar.librepods.bluetooth.AACPManager.Companion.ControlCommandIdentifiers
+import me.kavishdevar.librepods.data.SceneContext
+import me.kavishdevar.librepods.data.ScenePresetController
+import me.kavishdevar.librepods.data.SceneSetting
+
+/** Only the current-context provider and minimal UI state are supplied by the fixture. */
+internal class ExtractedManualSceneAdapter(
+    private val sceneController: ScenePresetController,
+    private val currentSceneContext: () -> SceneContext?
+) {
+    private data class UiState(val canApplyScenePresets: Boolean = false)
+    private val _uiState = MutableStateFlow(UiState())
+    val canApplyScenePresets: Boolean get() = _uiState.value.canApplyScenePresets
+
+"""
+    return (wrapper + excerpts + "}\n").encode(), excerpts.encode()
 
 
 def main():
@@ -38,7 +85,7 @@ def main():
     parser.add_argument("--compiler-lib", type=Path, help="Cached Gradle distribution lib directory")
     parser.add_argument("--case", help="Run only the named integration case")
     parser.add_argument("--negative-controls", action="store_true",
-                        help="Also prove three isolated deliberately broken source snapshots fail targeted cases")
+                        help="Also prove four isolated deliberately broken source snapshots fail targeted cases")
     options = parser.parse_args()
     compiler_lib = options.compiler_lib
     if compiler_lib is None:
@@ -55,7 +102,7 @@ def main():
     android_root = options.android_root.resolve()
     source = android_root / "app/src/main/java/me/kavishdevar/librepods"
     source_bytes = {}
-    for relative in PRODUCTION_SOURCES:
+    for relative in (*PRODUCTION_SOURCES, SCENE_VIEWMODEL_SOURCE):
         path = source / relative
         if not path.is_file():
             parser.error(f"Missing source: {path}")
@@ -70,6 +117,11 @@ def main():
     print(f"Production HEAD: {revision.stdout.strip() or 'unknown'} ({'working changes present' if dirty.stdout else 'clean'})", flush=True)
     for relative, data in source_bytes.items():
         print(f"Source SHA256 {hashlib.sha256(data).hexdigest()} {relative}", flush=True)
+    try:
+        _, excerpts = extracted_manual_scene_adapter(source_bytes)
+    except ValueError as error:
+        parser.error(str(error))
+    print(f"Extracted SHA256 {hashlib.sha256(excerpts).hexdigest()} ViewModel manual prefix, mapper and synchronizer", flush=True)
     coroutines = list(compiler_lib.glob("kotlinx-coroutines-core-jvm-*.jar"))
     if not coroutines:
         parser.error(f"No cached kotlinx-coroutines-core-jvm jar in {compiler_lib}")
@@ -82,7 +134,12 @@ def main():
             target = build / "production" / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             target.write_bytes(data)
-            sources.append(target)
+            if relative != SCENE_VIEWMODEL_SOURCE:
+                sources.append(target)
+        adapter, _ = extracted_manual_scene_adapter(snapshot)
+        adapter_source = build / "ExtractedManualSceneAdapter.kt"
+        adapter_source.write_bytes(adapter)
+        sources.append(adapter_source)
         # Resource IDs are the only Android dependency of the real model/capability table.
         resources = sorted(set(re.findall(r"R\.drawable\.(\w+)", snapshot["data/AirPods.kt"].decode())))
         resource_stub = build / "R.kt"
@@ -116,17 +173,22 @@ def main():
              "setControlCommandStatusValue(ControlCommandIdentifiers.fromByte(controlCommand.identifier)!!, controlCommand.value, current)",
              "setControlCommandStatusValue(ControlCommandIdentifiers.fromByte(controlCommand.identifier)!!, controlCommand.value, current)\n"
              "                parseAndStoreControlCommand(packet, current)",
-             "outgoing_cache_and_listeners_never_become_reports"),
+             "outgoing_cache_and_listeners_never_become_reports", None),
             ("confirmation_before_write_success", "data/ScenePresetController.kt",
              "if (entry.written != true || entry.reported != entry.command.target.value) return",
              "if (entry.reported != entry.command.target.value) return",
-             "matching_reply_during_failed_flush_cannot_apply"),
+             "matching_reply_during_failed_flush_cannot_apply", None),
             ("manual_edit_rewrites_previous_context", "data/ScenePresetController.kt",
              "if (entry.command.context != context) return",
              "// Removed context ownership guard for the isolated negative control.",
-             "manual_changes_on_replacement_preserve_earlier_results"),
+             "manual_changes_on_replacement_preserve_earlier_results", None),
+            ("manual_edit_skips_current_context_refresh", SCENE_VIEWMODEL_SOURCE,
+             "sceneSetting(identifier)?.let {\n            synchronizeSceneContext()\n            sceneController.supersede(it)\n        }",
+             "sceneSetting(identifier)?.let { sceneController.supersede(it) }",
+             "manual_prefix_refreshes_context_before_history_supersession",
+             "Actual manual prefix must refresh same-MAC session context before superseding historical observed result"),
         )
-        for name, relative, original, replacement, case in mutations:
+        for name, relative, original, replacement, case, required_assertion in mutations:
             text = source_bytes[relative].decode()
             if text.count(original) != 1:
                 parser.error(f"Negative-control anchor changed in {relative}; review mutation {name}. No production files were edited.")
@@ -134,7 +196,8 @@ def main():
             snapshot[relative] = text.replace(original, replacement, 1).encode()
             print(f"Checking isolated negative control: {name}", flush=True)
             result = compile_and_run(snapshot, build / name, case, capture=True)
-            failures = [line for line in result.stdout.splitlines() if line.startswith(f"FAIL {case}:")]
+            failures = [line for line in result.stdout.splitlines() if line.startswith(f"FAIL {case}:")
+                        and (required_assertion is None or required_assertion in line)]
             if result.returncode == 0 or not failures:
                 print(result.stdout, flush=True)
                 raise SystemExit(f"Negative control did not fail its intended assertion: {name}")

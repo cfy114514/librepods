@@ -6,7 +6,7 @@ Run from any directory after the scene feature sources are present:
 python3 /path/to/librepods/android/tests/scene-feedback/run.py
 ```
 
-To test another worktree or run the three optional negative controls:
+To test another worktree or run the four optional negative controls:
 
 ```sh
 python3 android/tests/scene-feedback/run.py --android-root /path/to/other/android --negative-controls
@@ -26,7 +26,7 @@ identify the tested source when a development worktree has uncommitted changes.
 All compilation output and mutated copies are removed on exit. Use
 `--case case_name` to run one named case.
 
-The 39 integration cases check these contracts:
+The 40 integration cases check these contracts:
 
 - Outgoing writes and ordinary optimistic cache/listener notifications cannot
   produce incoming device reports or advance the receive watermark.
@@ -69,6 +69,12 @@ The 39 integration cases check these contracts:
   without the old controller's unresolved-write history; a dedicated case records
   this limit rather than claiming causal attribution. Manual edits after a context
   change cannot rewrite the retained previous connection's outcome or its reason.
+- The exact production manual-edit prefix, setting mapper and context synchronizer
+  refresh context before supersession. A same-MAC AACP session reset before the
+  queued context notification must preserve the old observed outcome and retire
+  pending work with `CONNECTION_CHANGED`. Controlled selection changes and context
+  unavailability exercise the same ordering. With unchanged context, all three
+  mapped manual settings still retire their scene result with `SETTING_CHANGED`.
 - Real model capability and premium policies omit unsupported settings and hide
   unsupported scenes.
 
@@ -76,16 +82,23 @@ Latches and held stream monitors establish event order; timeouts only bound a
 failure. The Android stubs provide socket properties, logging, resource IDs and
 parcel annotations. They contain no parser, writer, confirmation or session
 logic. The controller fixture supplies a small callback adapter and controlled
-transport events, including the ViewModel's single-byte report check. It does
-**not** compile `AirPodsService`, the ViewModel or UI,
+transport events, including the ViewModel's single-byte report check. The runner
+also extracts and compiles the exact `setControlCommandValue` prefix before the
+manual send, `sceneSetting` mapper and `synchronizeSceneContext` method from the
+production ViewModel. It records the full source and excerpt hashes and rejects
+changed extraction boundaries. Only this adapter's current-context provider and
+minimal UI state are supplied by the fixture; the real AACP session generation
+provides the same-MAC reset identity. Selection and availability are fixture inputs.
+It does **not** compile `AirPodsService`, the complete ViewModel or UI,
 so this harness cannot prove their callback wiring, lifecycle ownership,
-rendering, firmware behavior or real Bluetooth transport behavior. Observer
+context discovery, Android broadcast scheduling, rendering, firmware behavior or
+real Bluetooth transport behavior. Observer
 close tests cover future packets, not revocation of an already captured callback.
 Those boundaries need the normal Android build/tests, code review and device
 checks. `APPLIED` means the target value was observed after dispatch and successful
 write; it does not prove the scene caused that report.
 
-With `--negative-controls`, a passing normal run is followed by three compilable
+With `--negative-controls`, a passing normal run is followed by four compilable
 mutations made only in temporary source copies:
 
 1. Publish an outgoing optimistic write through the receive path. The
@@ -94,6 +107,10 @@ mutations made only in temporary source copies:
    `matching_reply_during_failed_flush_cannot_apply` assertion must fail.
 3. Remove the context-ownership check from manual supersession. The
    `manual_changes_on_replacement_preserve_earlier_results` assertion must fail.
+4. Restore the old production manual-edit prefix that supersedes without first
+   synchronizing context. The
+   `manual_prefix_refreshes_context_before_history_supersession` assertion must
+   fail for the same-MAC session change before its context notification.
 
 A compiler error does not count as a successful negative control. Each mutation
 must fail its named runtime assertion. If its source anchor changes, the runner
