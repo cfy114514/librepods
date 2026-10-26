@@ -11,6 +11,10 @@ import android.content.SharedPreferences
 import android.os.Handler
 import android.os.SystemClock
 import java.util.Base64
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicReference
+import kotlin.concurrent.thread
 import me.kavishdevar.librepods.utils.BluetoothCryptography
 
 private val KEY = "9b7d390aa610103405adc857a33402ec".hexToByteArray()
@@ -312,6 +316,87 @@ private fun thrownStartRetiresPartialRegistration() = Fixture(enabled = false).u
     check(f.lids == listOf(true))
 }
 
+private fun failureCallbackDoesNotWaitForBlockedStart() = Fixture(enabled = false).use { f ->
+    f.adapter.isEnabled = true
+    val binderEntered = CountDownLatch(1)
+    val releaseBinder = CountDownLatch(1)
+    val callbackFinished = CountDownLatch(1)
+    val failure = AtomicReference<Throwable?>()
+    f.scanner.onStart = {
+        binderEntered.countDown()
+        if (!releaseBinder.await(10, TimeUnit.SECONDS)) failure.set(IllegalStateException("Start Binder was not released"))
+    }
+    val start = thread(name = "blocked-scan-start") { f.manager.startScanning() }
+    var callback: Thread? = null
+    try {
+        check(binderEntered.await(3, TimeUnit.SECONDS)) { "Start did not enter Binder" }
+        val registered = checkNotNull(f.scanner.callback)
+        callback = thread(name = "main-scan-failure") {
+            try { registered.onScanFailed(2) }
+            catch (error: Throwable) { failure.set(error) }
+            finally { callbackFinished.countDown() }
+        }
+        check(callbackFinished.await(3, TimeUnit.SECONDS)) { "Failure callback waited for blocked startScan Binder" }
+        check(releaseBinder.count == 1L && start.isAlive) { "Start Binder was released before callback returned" }
+        check(Handler.pendingCount == 0)
+    } finally {
+        releaseBinder.countDown()
+        start.join(5_000)
+        callback?.join(5_000)
+    }
+    check(!start.isAlive && callback?.isAlive != true)
+    failure.get()?.let { throw it }
+    check(Handler.pendingCount == 0 && f.manager.getMostRecentStatus() == null) {
+        "Failure during blocked startup restarted maintenance"
+    }
+}
+
+private fun retiredFailureDoesNotWaitForBlockedStop() = Fixture().use { f ->
+    val registered = checkNotNull(f.scanner.callback)
+    val binderEntered = CountDownLatch(1)
+    val releaseBinder = CountDownLatch(1)
+    val callbackFinished = CountDownLatch(1)
+    val failure = AtomicReference<Throwable?>()
+    f.scanner.onStop = {
+        binderEntered.countDown()
+        if (!releaseBinder.await(10, TimeUnit.SECONDS)) failure.set(IllegalStateException("Stop Binder was not released"))
+    }
+    val stop = thread(name = "blocked-scan-stop") { f.manager.stopScanning() }
+    var callback: Thread? = null
+    try {
+        check(binderEntered.await(3, TimeUnit.SECONDS)) { "Stop did not enter Binder" }
+        callback = thread(name = "main-retired-scan-failure") {
+            try { registered.onScanFailed(2) }
+            catch (error: Throwable) { failure.set(error) }
+            finally { callbackFinished.countDown() }
+        }
+        check(callbackFinished.await(3, TimeUnit.SECONDS)) { "Retired failure callback waited for blocked stopScan Binder" }
+        check(releaseBinder.count == 1L && stop.isAlive) { "Stop Binder was released before callback returned" }
+        check(Handler.pendingCount == 0)
+    } finally {
+        releaseBinder.countDown()
+        stop.join(5_000)
+        callback?.join(5_000)
+    }
+    check(!stop.isAlive && callback?.isAlive != true)
+    failure.get()?.let { throw it }
+}
+
+private fun retiredFailureCannotStopReplacementScan() = Fixture().use { f ->
+    val retired = checkNotNull(f.scanner.callback)
+    f.manager.stopScanning()
+    f.manager.startScanning()
+    val replacement = checkNotNull(f.scanner.callback)
+    retired.onScanFailed(2)
+    check(f.scanner.callback === replacement && Handler.pendingCount == 1) {
+        "Retired failure stopped replacement scan maintenance"
+    }
+    SystemClock.now = 2_000; f.single(seen = 2_000)
+    check(f.lids == listOf(true) && f.manager.getMostRecentStatus() != null) {
+        "Retired failure invalidated replacement scan"
+    }
+}
+
 private fun timeoutCleanupDoesNotRestoreDelayedPresence() = Fixture().use { f ->
     SystemClock.now = 2_000; f.single(seen = 2_000)
     SystemClock.now = 20_000; Handler.runPending()
@@ -381,6 +466,9 @@ fun main() {
         "invalidation rejects callbacks before queued stop" to ::invalidationRejectsCallbacksBeforeQueuedStop,
         "synchronous failure cannot restart maintenance" to ::synchronousFailureCannotRestartMaintenance,
         "thrown start retires partial registration" to ::thrownStartRetiresPartialRegistration,
+        "failure callback does not wait for blocked start" to ::failureCallbackDoesNotWaitForBlockedStart,
+        "retired failure does not wait for blocked stop" to ::retiredFailureDoesNotWaitForBlockedStop,
+        "retired failure cannot stop replacement scan" to ::retiredFailureCannotStopReplacementScan,
         "timeout cleanup does not revive delayed presence" to ::timeoutCleanupDoesNotRestoreDelayedPresence,
         "new IRK resets ordering" to ::changingIrkResetsOrderingForTheNewIdentity,
         "unchanged newer state refreshes observation time" to ::newerUnchangedStateRefreshesOnlyObservationTime,

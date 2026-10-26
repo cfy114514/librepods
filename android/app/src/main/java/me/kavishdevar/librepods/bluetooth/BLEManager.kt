@@ -103,6 +103,9 @@ class BLEManager(private val context: Context) {
         fun onDeviceDisappeared()
     }
 
+    // Scan operations serialize on this manager; callbacks use only this short
+    // state lock, which is never held across Bluetooth framework calls.
+    private val scanStateLock = Any()
     private var mBluetoothLeScanner: BluetoothLeScanner? = null
     @Volatile private var mScanCallback: ScanCallback? = null
     @Volatile private var airPodsStatusListener: AirPodsStatusListener? = null
@@ -167,7 +170,6 @@ class BLEManager(private val context: Context) {
             }
 
             val scanner = btAdapter.bluetoothLeScanner ?: return
-            mBluetoothLeScanner = scanner
 
             val scanSettings = ScanSettings.Builder()
                 .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
@@ -210,26 +212,35 @@ class BLEManager(private val context: Context) {
                 }
 
                 override fun onScanFailed(errorCode: Int) {
-                    synchronized(this@BLEManager) {
+                    synchronized(scanStateLock) {
                         if (!isCurrent()) return
                         mScanCallback = null
                         cleanupTask.stop()
-                        Log.e(TAG, "BLE scan failed with error code: $errorCode")
                     }
+                    Log.e(TAG, "BLE scan failed with error code: $errorCode")
                 }
             }
 
-            mScanCallback = callback
+            synchronized(scanStateLock) {
+                if (!canStart()) return
+                mBluetoothLeScanner = scanner
+                mScanCallback = callback
+            }
             scanner.startScan(listOf(scanFilter), scanSettings, callback)
             // Shutdown can invalidate an in-flight Binder call. A synchronous
             // failure callback also retires this registration before start returns.
-            if (!canStart() || mScanCallback !== callback) {
+            val started = synchronized(scanStateLock) {
+                if (!canStart() || mScanCallback !== callback) false
+                else {
+                    cleanupTask.start()
+                    true
+                }
+            }
+            if (!started) {
                 stopScanning()
                 return
             }
             Log.d(TAG, "BLE scanner started successfully")
-
-            cleanupTask.start()
         } catch (t: Throwable) {
             stopScanning()
             Log.e(TAG, "Error starting BLE scanner", t)
@@ -239,18 +250,20 @@ class BLEManager(private val context: Context) {
     @SuppressLint("MissingPermission")
     @Synchronized
     fun stopScanning() {
-        cleanupTask.stop()
-        val callback = mScanCallback
-        val scanner = mBluetoothLeScanner
-        // Invalidate even if stopScan fails after permission/adapter changes.
-        mScanCallback = null
-        mBluetoothLeScanner = null
-        deviceStatusMap.clear()
-        mostRecentAddress = null
-        lidState.reset()
-        lastBroadcastTime = 0
-        // Retain the observation watermark: previously accepted timestamps
-        // stay retired, but a newer observation can reopen the lid.
+        val (scanner, callback) = synchronized(scanStateLock) {
+            cleanupTask.stop()
+            val retired = mBluetoothLeScanner to mScanCallback
+            // Invalidate even if stopScan fails after permission/adapter changes.
+            mScanCallback = null
+            mBluetoothLeScanner = null
+            deviceStatusMap.clear()
+            mostRecentAddress = null
+            lidState.reset()
+            lastBroadcastTime = 0
+            // Retain the observation watermark: previously accepted timestamps
+            // stay retired, but a newer observation can reopen the lid.
+            retired
+        }
         try {
             if (scanner != null && callback != null) {
                 Log.d(TAG, "Stopping BLE scanner")

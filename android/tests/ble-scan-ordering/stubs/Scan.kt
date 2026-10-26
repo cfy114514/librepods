@@ -12,12 +12,17 @@ class BluetoothLeScanner {
     var starts = 0
     var stops = 0
     var onStart: (() -> Unit)? = null
+    var onStop: (() -> Unit)? = null
     fun startScan(filters: List<ScanFilter>, settings: ScanSettings, callback: ScanCallback?) {
         starts++
         this.callback = callback
         onStart?.invoke()
     }
-    fun stopScan(callback: ScanCallback) { stops++; if (this.callback === callback) this.callback = null }
+    fun stopScan(callback: ScanCallback) {
+        stops++
+        onStop?.invoke()
+        if (this.callback === callback) this.callback = null
+    }
 }
 class ScanFilter { class Builder {
     fun setManufacturerData(id: Int, data: ByteArray, mask: ByteArray) = this
