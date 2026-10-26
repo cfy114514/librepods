@@ -45,13 +45,19 @@ private class AacpState {
     fun captureDeviceSession() = session
     fun isCurrentDeviceSession(value: Long) = value == session
 }
-private class Preferences { fun getBoolean(key: String, fallback: Boolean) = true }
+private class Preferences {
+    fun getBoolean(key: String, fallback: Boolean) = true
+    fun getString(key: String, fallback: String?) = if (key == "mac_address") PEER else fallback
+}
+private typealias SharedPreferences = Preferences
+private object ServiceManager { var current: AirPodsService? = null; fun getService() = current }
+private class BLEManager { class Status(val lidOpen: Boolean = true); fun getMostRecentStatus() = Status() }
 private object Settings { fun canDrawOverlays(service: Service) = true }
 private class Model(val connectionArtworkRes: Int? = null)
 private class Instance(val model: Model)
-private class PopupWindow(context: Any) {
-    fun close() = Unit
-    fun open(name: String, battery: Any, artwork: Int?) { onOpen?.invoke() }
+private class PopupWindow(context: Any, private val onClose: () -> Unit = {}) {
+    fun close() { onClose() }
+    fun open(name: String, battery: Any, artwork: Int?): Boolean { onOpen?.invoke(); return true }
     companion object { var onOpen: (() -> Unit)? = null }
 }
 private typealias Service = AirPodsService
@@ -89,9 +95,8 @@ private class AirPodsService {
     var device: BluetoothDevice? = BluetoothDevice(PEER)
     var observerNotices = 0
     var notificationResets = 0
-    var popupShown = false
-        set(value) { check(serviceScope.onMain) { "Popup state was mutated outside Main" }; field = value }
-    private var popupWindow: PopupWindow? = null
+    val bleManager = BLEManager()
+    val bleScanningRequested = true
     val applicationContext = Any()
     val batteryNotification = Any()
     val airpodsInstance: Instance? = null
@@ -99,6 +104,7 @@ private class AirPodsService {
     val packageName = "regression"
 
     init {
+        ServiceManager.current = this
 @@RECEIVER@@
 @@FILTER@@
 @@REGISTRATION@@

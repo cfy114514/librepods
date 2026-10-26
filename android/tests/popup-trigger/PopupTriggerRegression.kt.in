@@ -1,0 +1,290 @@
+package regression
+
+import java.io.Closeable
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.CoroutineContext
+import kotlinx.coroutines.CoroutineDispatcher
+import me.kavishdevar.librepods.utils.CoalescedWorkSession
+import me.kavishdevar.librepods.bluetooth.BleLidState
+
+private const val TAG = "PopupTriggerRegression"
+private const val MODE_PRIVATE = 0
+private const val PEER = "AA:BB:CC:DD:EE:FF"
+private object Log { fun d(tag: String, message: String) = Unit; fun w(tag: String, message: String, error: Exception) = Unit }
+private class ControlledDispatcher : CoroutineDispatcher() {
+    private val pending = ArrayDeque<Runnable>()
+    override fun dispatch(context: CoroutineContext, block: Runnable) { pending.addLast(block) }
+    fun drain() { while (pending.isNotEmpty()) pending.removeFirst().run() }
+}
+private object Dispatchers { val IO = ControlledDispatcher(); object Main { val immediate = Any() } }
+private class MainQueue {
+    private val pending = ArrayDeque<() -> Unit>()
+    var onMain = true
+    fun launch(dispatcher: Any, action: () -> Unit) { if (onMain) action() else pending.addLast(action) }
+    fun onIo(action: () -> Unit) { onMain = false; try { action() } finally { onMain = true } }
+    fun drain() { check(onMain); while (pending.isNotEmpty()) pending.removeFirst().invoke() }
+}
+private class ResourceState : Closeable {
+    var isClosed = false
+    private val resources = mutableListOf<Closeable>()
+    fun <T : Closeable> track(resource: T): T { resources += resource; return resource }
+    override fun close() { isClosed = true; resources.forEach { it.close() } }
+}
+private class Preferences {
+    val strings = mutableMapOf("mac_address" to PEER, "IRK" to "key", "name" to "AirPods")
+    var popupEnabled = true
+    fun getString(key: String, fallback: String?) = strings[key] ?: fallback
+    fun getBoolean(key: String, fallback: Boolean) = popupEnabled
+}
+private typealias SharedPreferences = Preferences
+private object Settings { var allowed = true; fun canDrawOverlays(service: Service) = allowed }
+private object ServiceManager { var current: AirPodsService? = null; fun getService() = current }
+private class Status(val lidOpen: Boolean)
+// Platform collaborator only. Real BLEManager scan ownership and stale source admission
+// are exercised by ble-scan-ordering; this fake records service requests and predicates.
+private class BLEManager {
+    var status: Status? = null
+    var adapterEnabled = true
+    var starts = 0
+    var stops = 0
+    var active = false
+    var owner: (() -> Boolean)? = null
+    fun getMostRecentStatus() = status.takeIf { active && owner?.invoke() != false }
+    fun startScanning(canStart: () -> Boolean = { true }) {
+        if (!canStart() || active || !adapterEnabled) return
+        starts++; active = true; owner = canStart
+    }
+    fun stopScanning() { stops++; active = false; status = null }
+}
+private object BluetoothAdapter {
+    const val ACTION_STATE_CHANGED = "state"; const val EXTRA_STATE = "state"; const val ERROR = -1
+    const val STATE_ON = 12; const val STATE_OFF = 10
+}
+private class Intent(val state: Int) { fun getIntExtra(key: String, fallback: Int) = state }
+private class Model(val connectionArtworkRes: Int? = null)
+private class Instance(val model: Model)
+private class PopupWindow(context: Any, private val onClose: () -> Unit = {}) {
+    var closeRequests = 0
+    var attached = false
+    init { if (failConstruction) throw IllegalStateException("inflate failed"); windows += this }
+    fun open(name: String, battery: Any, artwork: Int?): Boolean {
+        if (!succeed) return false
+        attached = true; opens++; return true
+    }
+    fun close() { closeRequests++ }
+    fun finishClose() { attached = false; onClose() }
+    companion object {
+        val windows = mutableListOf<PopupWindow>()
+        var opens = 0; var succeed = true; var failConstruction = false
+        fun reset() { windows.clear(); opens = 0; succeed = true; failConstruction = false }
+    }
+}
+private typealias Service = AirPodsService
+private class AirPodsService(enabled: Boolean = true) : Closeable {
+    val serviceResources = ResourceState()
+    val serviceScope = MainQueue()
+    val sharedPreferences = Preferences()
+    val applicationContext = Any()
+    val batteryNotification = Any()
+    val airpodsInstance: Instance? = null
+    lateinit var bleManager: BLEManager
+    private val lidState = BleLidState()
+    private var timestamp = 0L
+    var observationInvalidations = 0
+@@SCAN@@
+    init {
+        bleManager = BLEManager().apply { adapterEnabled = enabled }
+        ServiceManager.current = this
+        serviceResources.track(Closeable { bleManager.stopScanning() })
+        @@START@@
+    }
+    private fun getSharedPreferences(name: String, mode: Int) = sharedPreferences
+    private fun invalidateConnectionObservations() { observationInvalidations++ }
+    fun adapter(enabled: Boolean) {
+        bleManager.adapterEnabled = enabled
+        val action = BluetoothAdapter.ACTION_STATE_CHANGED
+        val intent = Intent(if (enabled) BluetoothAdapter.STATE_ON else BluetoothAdapter.STATE_OFF)
+@@ADAPTER@@
+    }
+    fun advertisement(open: Boolean) {
+        bleManager.status = Status(open)
+        if (lidState.observe(open, ++timestamp)) onLidStateChanged(open)
+    }
+    fun changePreference(key: String, value: String) {
+        sharedPreferences.strings[key] = value
+        @@PREF@@
+    }
+    override fun close() {
+        @@CLOSE@@
+        serviceResources.close()
+    }
+@@LID@@
+@@POPUP@@
+}
+
+fun main() {
+    var total = 0
+    var failures = 0
+    fun scenario(name: String, enabled: Boolean = true, test: (AirPodsService) -> Unit) {
+        total++
+        PopupWindow.reset(); Settings.allowed = true
+        val service = AirPodsService(enabled)
+        Dispatchers.IO.drain()
+        try { test(service); println("PASS $name") }
+        catch (failure: Throwable) { failures++; println("FAIL $name: ${failure.message}") }
+        finally { service.close(); Dispatchers.IO.drain() }
+    }
+    fun last() = PopupWindow.windows.last()
+    scenario("first open lid observation shows once without a control connection") { service ->
+        service.advertisement(true)
+        check(PopupWindow.opens == 1 && service.popupShown)
+    }
+    scenario("auto dismissal permits next closed to open transition") { service ->
+        service.advertisement(true); last().finishClose()
+        service.advertisement(false); service.advertisement(true)
+        check(PopupWindow.opens == 2) { "first dismissal permanently suppressed subsequent lid openings" }
+    }
+    scenario("manual dismissal clears visible state") { service ->
+        service.advertisement(true); last().close(); last().finishClose()
+        check(!service.popupShown) { "closed window remained marked shown" }
+    }
+    scenario("unchanged open advertisements do not reopen after dismissal") { service ->
+        service.advertisement(true); last().finishClose()
+        repeat(4) { service.advertisement(true) }
+        check(PopupWindow.opens == 1)
+    }
+    scenario("lid close retires current window and rearms next opening") { service ->
+        service.advertisement(true); val old = last()
+        service.advertisement(false)
+        check(old.closeRequests == 1 && !service.popupShown)
+        service.advertisement(true)
+        check(PopupWindow.opens == 2 && service.popupShown)
+    }
+    scenario("late old close callback cannot clear newer popup") { service ->
+        service.advertisement(true); val old = last()
+        service.advertisement(false); service.advertisement(true)
+        old.finishClose()
+        check(service.popupShown && PopupWindow.opens == 2)
+    }
+    scenario("queued open followed by lid close never attaches") { service ->
+        service.serviceScope.onIo { service.advertisement(true); service.advertisement(false) }
+        service.serviceScope.drain()
+        check(PopupWindow.opens == 0) { "obsolete lid event attached a popup" }
+    }
+    scenario("queued popup rechecks setting") { service ->
+        service.serviceScope.onIo { service.advertisement(true) }
+        service.sharedPreferences.popupEnabled = false
+        service.serviceScope.drain()
+        check(PopupWindow.opens == 0)
+    }
+    scenario("queued popup rechecks overlay permission") { service ->
+        service.serviceScope.onIo { service.advertisement(true) }
+        Settings.allowed = false; service.serviceScope.drain()
+        check(PopupWindow.opens == 0)
+    }
+    scenario("queued popup cannot cross a selected peer change") { service ->
+        service.serviceScope.onIo { service.advertisement(true) }
+        service.changePreference("mac_address", "11:22:33:44:55:66")
+        service.serviceScope.drain()
+        check(PopupWindow.opens == 0)
+    }
+    scenario("peer away and back does not revive queued popup") { service ->
+        service.serviceScope.onIo { service.advertisement(true) }
+        service.changePreference("mac_address", "11:22:33:44:55:66")
+        service.changePreference("mac_address", PEER)
+        service.serviceScope.drain()
+        check(PopupWindow.opens == 0)
+    }
+    scenario("queued popup cannot cross identity key replacement") { service ->
+        service.serviceScope.onIo { service.advertisement(true) }
+        service.changePreference("IRK", "replacement")
+        service.serviceScope.drain()
+        check(PopupWindow.opens == 0)
+    }
+    scenario("disabled and reenabled setting does not replay queued popup") { service ->
+        service.serviceScope.onIo { service.advertisement(true) }
+        service.sharedPreferences.popupEnabled = false
+        service.changePreference("show_bottom_sheet_popup", "false")
+        service.sharedPreferences.popupEnabled = true
+        service.serviceScope.drain()
+        check(PopupWindow.opens == 0)
+    }
+    scenario("queued popup cannot outlive current BLE source") { service ->
+        service.serviceScope.onIo { service.advertisement(true) }
+        service.bleManager.status = null
+        service.serviceScope.drain()
+        check(PopupWindow.opens == 0)
+    }
+    scenario("queued popup cannot outlive service ownership") { service ->
+        service.serviceScope.onIo { service.advertisement(true) }
+        ServiceManager.current = null
+        service.serviceScope.drain()
+        check(PopupWindow.opens == 0)
+    }
+    scenario("queued popup cannot outlive service close") { service ->
+        service.serviceScope.onIo { service.advertisement(true) }
+        service.close(); service.serviceScope.drain()
+        check(PopupWindow.opens == 0)
+    }
+    scenario("failed window attach does not consume future lid opening") { service ->
+        PopupWindow.succeed = false; service.advertisement(true)
+        check(!service.popupShown) { "failed attach latched popupShown" }
+        PopupWindow.succeed = true; service.advertisement(false); service.advertisement(true)
+        check(PopupWindow.opens == 1 && service.popupShown)
+    }
+    scenario("constructor failure does not escape callback or suppress next opening") { service ->
+        PopupWindow.failConstruction = true; service.advertisement(true)
+        check(!service.popupShown)
+        PopupWindow.failConstruction = false; service.advertisement(false); service.advertisement(true)
+        check(PopupWindow.opens == 1)
+    }
+    scenario("permission grant while lid stays open does not force replay") { service ->
+        Settings.allowed = false; service.advertisement(true)
+        Settings.allowed = true; service.advertisement(true)
+        check(PopupWindow.opens == 0)
+        service.advertisement(false); service.advertisement(true)
+        check(PopupWindow.opens == 1)
+    }
+    if (@@SCAN_TESTS@@) {
+        scenario("cold service with adapter disabled starts scan after STATE_ON", enabled = false) { service ->
+            check(service.bleManager.starts == 0)
+            service.adapter(true); Dispatchers.IO.drain()
+            check(service.bleManager.starts == 1 && service.bleManager.active)
+            service.advertisement(true); check(PopupWindow.opens == 1)
+        }
+        scenario("repeated STATE_ON preserves active scan") { service ->
+            val stops = service.bleManager.stops
+            repeat(3) { service.adapter(true) }; Dispatchers.IO.drain()
+            check(service.bleManager.starts == 1 && service.bleManager.stops == stops)
+        }
+        scenario("coalesced OFF ON replaces retired platform scan") { service ->
+            val owner = service.bleManager.owner!!
+            service.adapter(false)
+            check(!owner()) { "adapter off did not synchronously invalidate callback ownership" }
+            service.adapter(true)
+            check(!owner()) { "adapter on revived retired callback ownership" }
+            Dispatchers.IO.drain()
+            check(service.bleManager.starts == 2 && service.bleManager.active)
+        }
+        scenario("OFF retires queued popup before IO stop runs") { service ->
+            service.serviceScope.onIo { service.advertisement(true) }
+            service.adapter(false); service.serviceScope.drain()
+            check(PopupWindow.opens == 0)
+            Dispatchers.IO.drain(); check(!service.bleManager.active)
+        }
+        scenario("queued ON cancelled by OFF before dispatch", enabled = false) { service ->
+            service.adapter(true); service.adapter(false); Dispatchers.IO.drain()
+            check(service.bleManager.starts == 0 && !service.bleManager.active)
+        }
+        scenario("queued scan start cannot survive service close", enabled = false) { service ->
+            service.adapter(true); service.close(); Dispatchers.IO.drain()
+            check(service.bleManager.starts == 0 && !service.bleManager.active)
+        }
+        scenario("queued scan start cannot survive service replacement", enabled = false) { service ->
+            service.adapter(true); ServiceManager.current = null; Dispatchers.IO.drain()
+            check(service.bleManager.starts == 0 && !service.bleManager.active)
+        }
+    }
+    println("RESULT $total scenarios, $failures failures")
+    check(failures == 0)
+}

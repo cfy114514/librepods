@@ -146,7 +146,9 @@ class BLEManager(private val context: Context) {
     }
 
     @SuppressLint("MissingPermission")
-    fun startScanning() {
+    @Synchronized
+    fun startScanning(canStart: () -> Boolean = { true }) {
+        if (!canStart() || mScanCallback != null) return
         stopScanning()
         try {
             Log.d(TAG, "Starting BLE scanner")
@@ -164,7 +166,8 @@ class BLEManager(private val context: Context) {
                 return
             }
 
-            mBluetoothLeScanner = btAdapter.bluetoothLeScanner
+            val scanner = btAdapter.bluetoothLeScanner ?: return
+            mBluetoothLeScanner = scanner
 
             val scanSettings = ScanSettings.Builder()
                 .setScanMode(ScanSettings.SCAN_MODE_LOW_LATENCY)
@@ -187,44 +190,54 @@ class BLEManager(private val context: Context) {
                 .setManufacturerData(76, manufacturerData, manufacturerDataMask)
                 .build()
 
-            mScanCallback = object : ScanCallback() {
+            val callback = object : ScanCallback() {
+                private fun isCurrent() = mScanCallback === this && canStart()
+
                 override fun onScanResult(callbackType: Int, result: ScanResult) {
-                    if (mScanCallback !== this) return
+                    if (!isCurrent()) return
                     processScanResult(result)
                 }
 
                 override fun onBatchScanResults(results: List<ScanResult>) {
-                    if (mScanCallback !== this) return
+                    if (!isCurrent()) return
                     advertisementDeduplicator.inBatch {
                         // Keep the newest state for each address in this batch.
                         for (result in results.sortedByDescending { it.timestampNanos }) {
-                            if (mScanCallback !== this) break
+                            if (!isCurrent()) break
                             processScanResult(result)
                         }
                     }
                 }
 
                 override fun onScanFailed(errorCode: Int) {
-                    if (mScanCallback !== this) return
-                    mScanCallback = null
-                    cleanupTask.stop()
-                    Log.e(TAG, "BLE scan failed with error code: $errorCode")
+                    synchronized(this@BLEManager) {
+                        if (!isCurrent()) return
+                        mScanCallback = null
+                        cleanupTask.stop()
+                        Log.e(TAG, "BLE scan failed with error code: $errorCode")
+                    }
                 }
             }
 
-            mBluetoothLeScanner?.startScan(listOf(scanFilter), scanSettings, mScanCallback)
+            mScanCallback = callback
+            scanner.startScan(listOf(scanFilter), scanSettings, callback)
+            // Shutdown can invalidate an in-flight Binder call. A synchronous
+            // failure callback also retires this registration before start returns.
+            if (!canStart() || mScanCallback !== callback) {
+                stopScanning()
+                return
+            }
             Log.d(TAG, "BLE scanner started successfully")
 
             cleanupTask.start()
         } catch (t: Throwable) {
-            mScanCallback = null
-            mBluetoothLeScanner = null
-            cleanupTask.stop()
+            stopScanning()
             Log.e(TAG, "Error starting BLE scanner", t)
         }
     }
 
     @SuppressLint("MissingPermission")
+    @Synchronized
     fun stopScanning() {
         cleanupTask.stop()
         val callback = mScanCallback
@@ -232,6 +245,12 @@ class BLEManager(private val context: Context) {
         // Invalidate even if stopScan fails after permission/adapter changes.
         mScanCallback = null
         mBluetoothLeScanner = null
+        deviceStatusMap.clear()
+        mostRecentAddress = null
+        lidState.reset()
+        lastBroadcastTime = 0
+        // Retain the observation watermark: delayed pre-stop advertisements
+        // must not revive presence, but a new observation can reopen the lid.
         try {
             if (scanner != null && callback != null) {
                 Log.d(TAG, "Stopping BLE scanner")

@@ -9,6 +9,7 @@ class Looper { companion object { fun getMainLooper() = Looper() } }
 class Handler(looper: Looper) {
     companion object {
         private val pending = mutableListOf<Runnable>()
+        val pendingCount get() = pending.size
         fun runPending() {
             val dispatched = pending.toList()
             pending.clear()

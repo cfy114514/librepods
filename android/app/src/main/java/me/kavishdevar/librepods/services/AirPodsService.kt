@@ -469,6 +469,33 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
     private var ownershipResetJob: Job? = null
 
     lateinit var bleManager: BLEManager
+    @Volatile private var bleScanningRequested = false
+    private val bleScanGeneration = AtomicLong()
+    private var appliedBleScanGeneration = -1L
+    private val bleScanUpdates = serviceResources.track(CoalescedWorkSession(
+        Dispatchers.IO, windowMillis = 0,
+        onError = { Log.w(TAG, "BLE scan lifecycle update failed", it) }, work = ::refreshBleScanning))
+
+    private fun updateBleScanning(enabled: Boolean) {
+        if (!enabled) bleScanGeneration.incrementAndGet()
+        bleScanningRequested = enabled
+        bleScanUpdates.request()
+    }
+
+    private fun bleScanCurrent(generation: Long): Boolean =
+        bleScanningRequested && generation == bleScanGeneration.get() &&
+            !serviceResources.isClosed && ServiceManager.getService() === this
+
+    private fun refreshBleScanning() {
+        if (!::bleManager.isInitialized) return
+        val generation = bleScanGeneration.get()
+        // Even a coalesced OFF/ON must retire the old platform registration.
+        if (appliedBleScanGeneration != generation || !bleScanCurrent(generation)) {
+            bleManager.stopScanning()
+            appliedBleScanGeneration = generation
+        }
+        if (bleScanCurrent(generation)) bleManager.startScanning { bleScanCurrent(generation) }
+    }
 
     companion object {
         private val pendingAudioProfiles = PendingAcquisitions<Int, PendingAudioProfileRecipient>(
@@ -558,6 +585,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
             } else {
                 Log.d(TAG, "Lid closed")
+                dismissPopup()
             }
         }
 
@@ -644,6 +672,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
         bleManager = BLEManager(this)
         bleManager.setAirPodsStatusListener(bleStatusListener)
+        serviceResources.track(Closeable { bleManager.stopScanning() })
 
         sharedPreferences = getSharedPreferences("settings", MODE_PRIVATE)
 
@@ -915,9 +944,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 //            clearPacketLogs()
 //        }
 
-        serviceScope.launch {
-            bleManager.startScanning()
-        }
+        updateBleScanning(true)
     }
 
     @SuppressLint("HardwareIds", "MissingPermission")
@@ -1912,6 +1939,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     override fun onSharedPreferenceChanged(preferences: SharedPreferences?, key: String?) {
         if (preferences == null || key == null) return
+        updatePopupPreference(preferences, key)
         if (key in informationKeys) refreshCachedInformation(notify = true)
 
         when (key) {
@@ -2123,23 +2151,60 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
 
     var popupShown = false
     private var popupWindow: PopupWindow? = null
-    fun showPopup(service: Service, name: String) {
-        if (serviceResources.isClosed) return
-        if (!sharedPreferences.getBoolean("show_bottom_sheet_popup", true)) {
-            return
-        }
-        if (!Settings.canDrawOverlays(service)) {
-            Log.d(TAG, "No permission for SYSTEM_ALERT_WINDOW")
-            return
-        }
+    private val popupGeneration = AtomicLong()
+
+    private fun updatePopupPreference(preferences: SharedPreferences, key: String) {
+        if (key == "mac_address" || key == "IRK" || key == "IRK_owner" ||
+            (key == "show_bottom_sheet_popup" && !preferences.getBoolean(key, true))) dismissPopup()
+    }
+
+    private fun dismissPopup() {
+        val generation = popupGeneration.incrementAndGet()
         serviceScope.launch(Dispatchers.Main.immediate) {
-            if (popupShown || serviceResources.isClosed) return@launch
-            popupWindow?.close()
-            val window = PopupWindow(service.applicationContext)
-            popupWindow = window
-            val model = airpodsInstance?.model
-            window.open(name, batteryNotification, model?.connectionArtworkRes)
-            popupShown = true
+            if (generation != popupGeneration.get()) return@launch
+            val window = popupWindow
+            popupWindow = null
+            popupShown = false
+            window?.close()
+        }
+    }
+
+    fun showPopup(service: Service, name: String) {
+        if (service !== this || serviceResources.isClosed) return
+        val generation = popupGeneration.get()
+        val selectedAddress = sharedPreferences.getString("mac_address", null)
+        val irk = sharedPreferences.getString("IRK", null)
+        serviceScope.launch(Dispatchers.Main.immediate) {
+            if (popupShown || generation != popupGeneration.get() || serviceResources.isClosed ||
+                ServiceManager.getService() !== this || !bleScanningRequested ||
+                selectedAddress != sharedPreferences.getString("mac_address", null) ||
+                irk != sharedPreferences.getString("IRK", null) ||
+                !sharedPreferences.getBoolean("show_bottom_sheet_popup", true) ||
+                !Settings.canDrawOverlays(service) || bleManager.getMostRecentStatus()?.lidOpen != true) return@launch
+            try {
+                popupWindow?.close()
+                lateinit var window: PopupWindow
+                window = PopupWindow(service.applicationContext) {
+                    // An old animated dismissal must not clear a newer popup.
+                    if (popupWindow === window) {
+                        popupWindow = null
+                        popupShown = false
+                    }
+                }
+                popupWindow = window
+                val model = airpodsInstance?.model
+                val opened = window.open(name, batteryNotification, model?.connectionArtworkRes)
+                if (popupWindow === window) {
+                    popupShown = opened
+                    if (!opened) popupWindow = null
+                }
+            } catch (error: Exception) {
+                val window = popupWindow
+                popupWindow = null
+                popupShown = false
+                window?.close()
+                Log.w(TAG, "Could not show bottom popup", error)
+            }
         }
     }
 
@@ -2817,8 +2882,12 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
             if (serviceResources.isClosed) return
             // Adapter state broadcasts have no EXTRA_DEVICE. Retire evidence before extracting it.
             if (action == BluetoothAdapter.ACTION_STATE_CHANGED) {
-                if (intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR) != BluetoothAdapter.STATE_ON)
+                val enabled = intent.getIntExtra(BluetoothAdapter.EXTRA_STATE, BluetoothAdapter.ERROR) == BluetoothAdapter.STATE_ON
+                updateBleScanning(enabled)
+                if (!enabled) {
+                    dismissPopup()
                     invalidateConnectionObservations()
+                }
                 return
             }
             if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
@@ -3447,7 +3516,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         val retiredSession = aacpManager.captureDeviceSession()
         serviceScope.launch(Dispatchers.Main.immediate) {
             if (aacpManager.isCurrentDeviceSession(retiredSession) &&
-                BluetoothConnectionManager.aacpSocket?.isConnected != true) popupShown = false
+                BluetoothConnectionManager.aacpSocket?.isConnected != true) dismissPopup()
         }
         // Observers need this notice; service state was already retired synchronously.
         sendBroadcast(Intent(AirPodsNotifications.AIRPODS_DISCONNECTED).setPackage(packageName))
@@ -3879,6 +3948,7 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         appliedHeadTrackingRequest = null
         headTrackingStartup.clear()
         headTrackingSession.close()
+        updateBleScanning(false)
         serviceResources.close()
         val retiredControl = ownedControlSocket.getAndSet(null)
         val retiredAtt = ownedAttSocket.getAndSet(null)
@@ -3896,6 +3966,8 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         localMacLookupFinished.countDown()
         gestureDetector?.release()
         MediaController.release(this)
+        popupGeneration.incrementAndGet()
+        popupShown = false
         popupWindow?.close()
         popupWindow = null
         islandWindow?.close()
@@ -3926,11 +3998,6 @@ class AirPodsService : Service(), SharedPreferences.OnSharedPreferenceChangeList
         }
         try {
             unregisterReceiver(connectionReceiver)
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-        try {
-            bleManager.stopScanning()
         } catch (e: Exception) {
             e.printStackTrace()
         }

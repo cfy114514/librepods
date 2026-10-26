@@ -216,6 +216,8 @@ private class AirPodsService : Context() {
     private fun recordBleBatteryHistory(status: BLEManager.AirPodsStatus) = Unit
     private fun updateBattery(force: Boolean) = Unit
     private fun showPopup(service: AirPodsService, name: String) = Unit
+    // Popup window lifecycle is covered by tests/popup-trigger.
+    private fun dismissPopup() { popupShown = false }
     private fun getSharedPreferences(name: String, mode: Int) = sharedPreferences
     private fun sendBroadcast(intent: Intent) = Unit
     private fun enqueueSocketConnection(adapter: BluetoothAdapter, device: BluetoothDevice, manual: Boolean,

@@ -57,7 +57,7 @@ def main():
     registration = between(service, "        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {\n            registerReceiver(connectionReceiver", "        // Query connected profiles; discovery alone must not attach control or claim audio.")
     sender = between(service, "                    if (notifyDisconnect && !serviceResources.isClosed) {", "\n                }\n                if (pendingAttSocket.get()")
     stale_watch = between(service, "    private fun clearStaleA2dpConnectionReceiver()", "    private fun dispatchProfileCleanup(")
-    popup = between(service, "    fun showPopup(service: Service, name: String)", "    var islandOpen = false")
+    popup = between(service, "    var popupShown = false", "    var islandOpen = false")
     dispatch = between(service, "                for (request in requests) {", "\n            }\n        } catch (_: java.util.concurrent.CancellationException)")
     revoke = between(service, "    private fun revokeAudioRestore(", "    private fun restoreAudio(")
     revoke = revoke.replace("private fun revokeAudioRestore", "fun revokeAudioRestore", 1)
