@@ -58,10 +58,12 @@ class PopupWindow(
     private val onCloseCallback: () -> Unit = {}
 ) {
     private val mView: View
+    private var isOpen = false
     private var isClosing = false
-    private var autoCloseHandler = Handler(Looper.getMainLooper())
+    private val autoCloseHandler = Handler(Looper.getMainLooper())
     private var autoCloseRunnable: Runnable? = null
     private var batteryUpdateReceiver: BroadcastReceiver? = null
+    private var windowAnimator: ObjectAnimator? = null
 
     @Suppress("DEPRECATION")
     private val mParams: WindowManager.LayoutParams = WindowManager.LayoutParams().apply {
@@ -114,7 +116,10 @@ class PopupWindow(
             View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
 
         mView.setOnTouchListener { _, event ->
-            if (event.action == MotionEvent.ACTION_DOWN) {
+            if (event.action == MotionEvent.ACTION_OUTSIDE) {
+                close()
+                true
+            } else if (event.action == MotionEvent.ACTION_DOWN) {
                 val touchY = event.rawY
                 val popupTop = mView.top
                 if (touchY < popupTop) {
@@ -130,64 +135,67 @@ class PopupWindow(
         mWindowManager = context.getSystemService(Context.WINDOW_SERVICE) as WindowManager
     }
 
+    /** Called on the main thread. True means the window and its updates are ready. */
     @SuppressLint("InlinedApi", "SetTextI18s")
-    fun open(name: String = "AirPods Pro", batteryNotification: AirPodsNotifications.BatteryNotification, artworkRes: Int? = null) {
+    fun open(name: String = "AirPods Pro", batteryNotification: AirPodsNotifications.BatteryNotification, artworkRes: Int? = null): Boolean {
+        if (isClosing) return false
+        if (isOpen) return true
         try {
-            if (mView.windowToken == null && mView.parent == null && !isClosing) {
-                mView.findViewById<TextView>(R.id.name).text = name
+            mView.visibility = View.VISIBLE
+            mView.findViewById<TextView>(R.id.name).text = name
 
-                updateBatteryStatus(batteryNotification)
+            updateBatteryStatus(batteryNotification)
 
-                val vid = mView.findViewById<VideoView>(R.id.video)
-                val artwork = mView.findViewById<ImageView>(R.id.connection_artwork)
-                if (artworkRes != null) {
-                    vid.stopPlayback()
-                    vid.visibility = View.GONE
-                    artwork.setImageResource(artworkRes)
-                    artwork.visibility = View.VISIBLE
-                } else {
-                    artwork.visibility = View.GONE
-                    vid.visibility = View.VISIBLE
-                    vid.setAudioFocusRequest(AudioManager.AUDIOFOCUS_NONE)
-                    vid.setVideoPath("android.resource://me.kavishdevar.librepods/" + R.raw.connected)
-                    vid.start()
-                    vid.setOnCompletionListener { vid.start() }
-                }
-
-                try {
-                    mWindowManager.addView(mView, mParams)
-                } catch (e: Exception) {
-                    e.printStackTrace()
-                }
-
-                val displayMetrics = mView.context.resources.displayMetrics
-                val screenHeight = displayMetrics.heightPixels
-
-                mView.translationY = screenHeight.toFloat()
-                mView.alpha = 1f
-
-                val translationY = PropertyValuesHolder.ofFloat(View.TRANSLATION_Y, screenHeight.toFloat(), 0f)
-
-                ObjectAnimator.ofPropertyValuesHolder(mView, translationY).apply {
-                    duration = 500
-                    interpolator = DecelerateInterpolator()
-                    start()
-                }
-
-                registerBatteryUpdateReceiver()
-
-                autoCloseRunnable = Runnable { close() }
-                autoCloseHandler.postDelayed(autoCloseRunnable!!, 12000)
+            val vid = mView.findViewById<VideoView>(R.id.video)
+            val artwork = mView.findViewById<ImageView>(R.id.connection_artwork)
+            if (artworkRes != null) {
+                vid.stopPlayback()
+                vid.visibility = View.GONE
+                artwork.setImageResource(artworkRes)
+                artwork.visibility = View.VISIBLE
+            } else {
+                artwork.visibility = View.GONE
+                vid.visibility = View.VISIBLE
+                vid.setAudioFocusRequest(AudioManager.AUDIOFOCUS_NONE)
+                vid.setVideoPath("android.resource://me.kavishdevar.librepods/" + R.raw.connected)
+                vid.start()
+                vid.setOnCompletionListener { vid.start() }
             }
+
+            mWindowManager.addView(mView, mParams)
+
+            val displayMetrics = mView.context.resources.displayMetrics
+            val screenHeight = displayMetrics.heightPixels
+
+            mView.translationY = screenHeight.toFloat()
+            mView.alpha = 1f
+
+            val translationY = PropertyValuesHolder.ofFloat(View.TRANSLATION_Y, screenHeight.toFloat(), 0f)
+
+            windowAnimator = ObjectAnimator.ofPropertyValuesHolder(mView, translationY).apply {
+                duration = 500
+                interpolator = DecelerateInterpolator()
+            }
+            windowAnimator?.start()
+
+            registerBatteryUpdateReceiver()
+
+            autoCloseRunnable = Runnable { close() }
+            check(autoCloseHandler.postDelayed(autoCloseRunnable!!, 12000)) {
+                "Unable to schedule popup timeout"
+            }
+            isOpen = true
+            return true
         } catch (e: Exception) {
             Log.e("PopupWindow", "Error opening popup: ${e.message}")
-            onCloseCallback()
+            releaseWindow()
+            return false
         }
     }
 
     @SuppressLint("UnspecifiedRegisterReceiverFlag")
     private fun registerBatteryUpdateReceiver() {
-        batteryUpdateReceiver = object : BroadcastReceiver() {
+        val receiver = object : BroadcastReceiver() {
             override fun onReceive(context: Context?, intent: Intent?) {
                 if (intent?.action == AirPodsNotifications.BATTERY_DATA) {
                     val batteryList = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
@@ -204,10 +212,12 @@ class PopupWindow(
         }
 
         val filter = IntentFilter(AirPodsNotifications.BATTERY_DATA)
+        // Keep ownership even if registration fails after creating its dispatcher.
+        batteryUpdateReceiver = receiver
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(batteryUpdateReceiver, filter, Context.RECEIVER_EXPORTED)
+            context.registerReceiver(receiver, filter, Context.RECEIVER_EXPORTED)
         } else {
-            context.registerReceiver(batteryUpdateReceiver, filter)
+            context.registerReceiver(receiver, filter)
         }
     }
 
@@ -215,9 +225,10 @@ class PopupWindow(
         batteryUpdateReceiver?.let {
             try {
                 context.unregisterReceiver(it)
-                batteryUpdateReceiver = null
             } catch (e: Exception) {
                 Log.e("PopupWindow", "Error unregistering battery receiver: ${e.message}")
+            } finally {
+                batteryUpdateReceiver = null
             }
         }
     }
@@ -259,40 +270,75 @@ class PopupWindow(
     }
 
     fun close() {
+        if (!isOpen || isClosing) return
+        isClosing = true
+        stopUpdates()
         try {
-            if (isClosing) return
-            isClosing = true
-
-            autoCloseRunnable?.let { autoCloseHandler.removeCallbacks(it) }
-            unregisterBatteryUpdateReceiver()
-
-            val vid = mView.findViewById<VideoView>(R.id.video)
-            vid.stopPlayback()
-
-            ObjectAnimator.ofFloat(mView, "translationY", mView.height.toFloat()).apply {
+            cancelWindowAnimation()
+            if (mView.parent == null) {
+                finishClose()
+                return
+            }
+            windowAnimator = ObjectAnimator.ofFloat(mView, "translationY", mView.height.toFloat()).apply {
                 duration = 500
                 interpolator = AccelerateInterpolator()
                 addListener(object : AnimatorListenerAdapter() {
                     override fun onAnimationEnd(animation: Animator) {
-                        try {
-                            mView.visibility = View.GONE
-                            if (mView.parent != null) {
-                                mWindowManager.removeView(mView)
-                            }
-                        } catch (e: Exception) {
-                            Log.e("PopupWindow", "Error removing view: ${e.message}")
-                        } finally {
-                            isClosing = false
-                            onCloseCallback()
-                        }
+                        finishClose()
                     }
                 })
-                start()
             }
+            windowAnimator?.start()
         } catch (e: Exception) {
             Log.e("PopupWindow", "Error closing popup: ${e.message}")
+            finishClose()
+        }
+    }
+
+    private fun stopUpdates() {
+        autoCloseRunnable?.let { autoCloseHandler.removeCallbacks(it) }
+        autoCloseRunnable = null
+        unregisterBatteryUpdateReceiver()
+        try {
+            val vid = mView.findViewById<VideoView>(R.id.video)
+            vid.setOnCompletionListener(null)
+            vid.stopPlayback()
+        } catch (e: Exception) {
+            Log.e("PopupWindow", "Error stopping video: ${e.message}")
+        }
+    }
+
+    private fun cancelWindowAnimation() {
+        windowAnimator?.let {
+            it.removeAllListeners()
+            it.cancel()
+        }
+        windowAnimator = null
+    }
+
+    private fun releaseWindow() {
+        stopUpdates()
+        cancelWindowAnimation()
+        try {
+            mView.visibility = View.GONE
+            if (mView.parent != null) {
+                mWindowManager.removeView(mView)
+            }
+        } catch (e: Exception) {
+            Log.e("PopupWindow", "Error removing view: ${e.message}")
+        } finally {
+            isOpen = false
             isClosing = false
+        }
+    }
+
+    private fun finishClose() {
+        if (!isOpen) return
+        releaseWindow()
+        try {
             onCloseCallback()
+        } catch (e: Exception) {
+            Log.e("PopupWindow", "Error in close callback: ${e.message}")
         }
     }
 }

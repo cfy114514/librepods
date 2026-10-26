@@ -1,0 +1,3 @@
+package android.view.animation
+class AccelerateInterpolator
+class DecelerateInterpolator
