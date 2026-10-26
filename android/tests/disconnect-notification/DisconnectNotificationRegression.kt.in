@@ -3,6 +3,8 @@ package me.kavishdevar.librepods.services
 import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.EmptyCoroutineContext
+import kotlinx.coroutines.CoroutineScope
 import java.util.concurrent.atomic.AtomicReference
 
 private const val TAG = "DisconnectRegression"
@@ -29,12 +31,13 @@ private class IntentFilter {
 }
 private abstract class BroadcastReceiver { abstract fun onReceive(context: Context?, intent: Intent?) }
 private object Dispatchers { object Main { val immediate = Any() } }
-private class MainQueue {
+private class MainQueue : CoroutineScope {
+    override val coroutineContext = EmptyCoroutineContext
     var onMain = true
-    private val pending = ArrayDeque<() -> Unit>()
-    fun launch(dispatcher: Any, action: () -> Unit) { if (onMain) action() else pending.addLast(action) }
+    private val pending = ArrayDeque<CoroutineScope.() -> Unit>()
+    fun launch(dispatcher: Any, action: CoroutineScope.() -> Unit) { if (onMain) action(this) else pending.addLast(action) }
     fun onIo(action: () -> Unit) { val before = onMain; onMain = false; try { action() } finally { onMain = before } }
-    fun drain() { check(onMain); while (pending.isNotEmpty()) pending.removeFirst().invoke() }
+    fun drain() { check(onMain); while (pending.isNotEmpty()) pending.removeFirst().invoke(this) }
 }
 private class ResourceState { var isClosed = false }
 private class AacpState {

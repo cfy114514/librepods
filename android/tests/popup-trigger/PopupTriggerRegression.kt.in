@@ -2,6 +2,8 @@ package regression
 
 import java.io.Closeable
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.EmptyCoroutineContext
+import kotlinx.coroutines.CoroutineScope
 import kotlin.coroutines.CoroutineContext
 import kotlinx.coroutines.CoroutineDispatcher
 import me.kavishdevar.librepods.utils.CoalescedWorkSession
@@ -17,12 +19,13 @@ private class ControlledDispatcher : CoroutineDispatcher() {
     fun drain() { while (pending.isNotEmpty()) pending.removeFirst().run() }
 }
 private object Dispatchers { val IO = ControlledDispatcher(); object Main { val immediate = Any() } }
-private class MainQueue {
-    private val pending = ArrayDeque<() -> Unit>()
+private class MainQueue : CoroutineScope {
+    override val coroutineContext = EmptyCoroutineContext
+    private val pending = ArrayDeque<CoroutineScope.() -> Unit>()
     var onMain = true
-    fun launch(dispatcher: Any, action: () -> Unit) { if (onMain) action() else pending.addLast(action) }
+    fun launch(dispatcher: Any, action: CoroutineScope.() -> Unit) { if (onMain) action(this) else pending.addLast(action) }
     fun onIo(action: () -> Unit) { onMain = false; try { action() } finally { onMain = true } }
-    fun drain() { check(onMain); while (pending.isNotEmpty()) pending.removeFirst().invoke() }
+    fun drain() { check(onMain); while (pending.isNotEmpty()) pending.removeFirst().invoke(this) }
 }
 private class ResourceState : Closeable {
     var isClosed = false

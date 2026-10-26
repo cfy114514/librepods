@@ -39,7 +39,7 @@ def main():
     if not java:
         parser.error("java is required")
     libraries = []
-    for pattern in ("kotlin-stdlib-*.jar", "annotations-*.jar"):
+    for pattern in ("kotlin-stdlib-*.jar", "annotations-*.jar", "kotlinx-coroutines-core*.jar"):
         matches = sorted(compiler_lib.glob(pattern))
         if not matches:
             parser.error(f"Missing {pattern} in {compiler_lib}")
