@@ -49,6 +49,14 @@
     <queries>
         <intent><action android:name="android.speech.RecognitionService" /></intent>
         <intent><action android:name="android.intent.action.TTS_SERVICE" /></intent>
+        <intent>
+            <action android:name="android.intent.action.MAIN" />
+            <category android:name="android.intent.category.LAUNCHER" />
+        </intent>
+        <intent><action android:name="android.intent.action.ASSIST" /></intent>
+        <intent><action android:name="android.intent.action.VOICE_COMMAND" /></intent>
+        <intent><action android:name="android.media.action.STILL_IMAGE_CAMERA" /></intent>
+        <intent><action android:name="android.intent.action.SHOW_ALARMS" /></intent>
     </queries>
 
     <application
@@ -105,6 +113,13 @@
                     android:host="add-magic-keys" />
             </intent-filter> -->
         </activity>
+
+        <activity
+            android:name=".shortcuts.StemShortcutDispatchActivity"
+            android:exported="false"
+            android:excludeFromRecents="true"
+            android:taskAffinity=""
+            android:theme="@style/Theme.StemShortcutDispatch" />
 
         <activity
             android:name=".QuickSettingsDialogActivity"

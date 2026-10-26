@@ -3,6 +3,8 @@ package me.kavishdevar.librepods.services
 import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.EmptyCoroutineContext
+import kotlinx.coroutines.CoroutineScope
 import java.util.concurrent.atomic.AtomicReference
 
 private const val TAG = "DisconnectRegression"
@@ -29,12 +31,13 @@ private class IntentFilter {
 }
 private abstract class BroadcastReceiver { abstract fun onReceive(context: Context?, intent: Intent?) }
 private object Dispatchers { object Main { val immediate = Any() } }
-private class MainQueue {
+private class MainQueue : CoroutineScope {
+    override val coroutineContext = EmptyCoroutineContext
     var onMain = true
-    private val pending = ArrayDeque<() -> Unit>()
-    fun launch(dispatcher: Any, action: () -> Unit) { if (onMain) action() else pending.addLast(action) }
+    private val pending = ArrayDeque<CoroutineScope.() -> Unit>()
+    fun launch(dispatcher: Any, action: CoroutineScope.() -> Unit) { if (onMain) action(this) else pending.addLast(action) }
     fun onIo(action: () -> Unit) { val before = onMain; onMain = false; try { action() } finally { onMain = before } }
-    fun drain() { check(onMain); while (pending.isNotEmpty()) pending.removeFirst().invoke() }
+    fun drain() { check(onMain); while (pending.isNotEmpty()) pending.removeFirst().invoke(this) }
 }
 private class ResourceState { var isClosed = false }
 private class AacpState {
@@ -45,13 +48,19 @@ private class AacpState {
     fun captureDeviceSession() = session
     fun isCurrentDeviceSession(value: Long) = value == session
 }
-private class Preferences { fun getBoolean(key: String, fallback: Boolean) = true }
+private class Preferences {
+    fun getBoolean(key: String, fallback: Boolean) = true
+    fun getString(key: String, fallback: String?) = if (key == "mac_address") PEER else fallback
+}
+private typealias SharedPreferences = Preferences
+private object ServiceManager { var current: AirPodsService? = null; fun getService() = current }
+private class BLEManager { class Status(val lidOpen: Boolean = true); fun getMostRecentStatus() = Status() }
 private object Settings { fun canDrawOverlays(service: Service) = true }
 private class Model(val connectionArtworkRes: Int? = null)
 private class Instance(val model: Model)
-private class PopupWindow(context: Any) {
-    fun close() = Unit
-    fun open(name: String, battery: Any, artwork: Int?) { onOpen?.invoke() }
+private class PopupWindow(context: Any, private val onClose: () -> Unit = {}) {
+    fun close() { onClose() }
+    fun open(name: String, battery: Any, artwork: Int?): Boolean { onOpen?.invoke(); return true }
     companion object { var onOpen: (() -> Unit)? = null }
 }
 private typealias Service = AirPodsService
@@ -74,6 +83,8 @@ private class AirPodsService {
     private val profileRequests = PendingProfileRequests<Int, Purpose, AudioProfileRequest>(setOf(1, 2), setOf(Purpose.POLICY))
     private val profileActionCurrent = ThreadLocal<() -> Boolean>()
     private val a2dpWatch = AtomicReference<Watch?>()
+    // Session-health ownership is exercised by the dedicated session-health harness.
+    private val ownedControlObservations = AtomicReference<java.io.Closeable?>()
     private lateinit var connectionReceiver: BroadcastReceiver
     private lateinit var installedFilter: IntentFilter
     private val bluetoothReceiver = object : BroadcastReceiver() {
@@ -87,9 +98,8 @@ private class AirPodsService {
     var device: BluetoothDevice? = BluetoothDevice(PEER)
     var observerNotices = 0
     var notificationResets = 0
-    var popupShown = false
-        set(value) { check(serviceScope.onMain) { "Popup state was mutated outside Main" }; field = value }
-    private var popupWindow: PopupWindow? = null
+    val bleManager = BLEManager()
+    val bleScanningRequested = true
     val applicationContext = Any()
     val batteryNotification = Any()
     val airpodsInstance: Instance? = null
@@ -97,6 +107,7 @@ private class AirPodsService {
     val packageName = "regression"
 
     init {
+        ServiceManager.current = this
 @@RECEIVER@@
 @@FILTER@@
 @@REGISTRATION@@

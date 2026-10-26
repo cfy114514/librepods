@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="battery_session_title">Sesión de batería</string>
+    <string name="battery_session_description">Lecturas en vivo de esta conexión. El tiempo restante es aproximado y puede variar según el uso y los ajustes.</string>
+    <string name="battery_session_disconnected">Conecta para registrar la tendencia de batería</string>
+    <string name="battery_session_waiting">Esperando una lectura de batería en vivo</string>
+    <string name="battery_session_charging">Cargando · estimación en pausa</string>
+    <string name="battery_session_unavailable">Lectura de batería no disponible · tendencia en pausa</string>
+    <string name="battery_session_stale">Sin lectura de batería reciente · tendencia en pausa</string>
+    <string name="battery_session_clock_changed">Cambió la referencia de tiempo · registrando una nueva tendencia</string>
+    <string name="battery_session_collecting">Registrando tendencia · se necesitan al menos 15 min</string>
+    <string name="battery_session_insufficient_drain">Cambio de batería insuficiente para estimar</string>
+    <string name="battery_session_rough_minutes">Tiempo restante aproximado: unos %1$d min</string>
+    <string name="battery_session_rough_under_five">Tiempo restante aproximado: menos de 5 min</string>
+    <string name="battery_session_trend">%1$d%% → %2$d%% en %3$d min</string>
+    <string name="battery_session_level">%1$d%%</string>
+</resources>

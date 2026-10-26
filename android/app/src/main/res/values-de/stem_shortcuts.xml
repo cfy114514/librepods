@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="stem_shortcuts_title">Kurzbefehle am Stiel</string>
+    <string name="stem_shortcut_custom">App oder Kurzbefehl</string>
+    <string name="stem_shortcut_choose">App oder Kurzbefehl auswählen</string>
+    <string name="stem_shortcut_search">Apps und Aktionen suchen</string>
+    <string name="stem_shortcut_supported">Wähle eine installierte App oder eine der unten verfügbaren Android-Aktionen. App-spezifische Kurzbefehle des Startbildschirms sind hier nicht verfügbar. Ist das Ziel nicht verfügbar, fordert LibrePods stattdessen deinen Standardassistenten an.</string>
+    <string name="stem_shortcut_behavior">Kann dieses Ziel nicht geöffnet werden, fordert LibrePods deinen digitalen Standardassistenten an. Wenn LibrePods im Hintergrund läuft, tippe auf die Benachrichtigung zum Kurzbefehl, um fortzufahren. Benachrichtigungen müssen dafür aktiviert sein. Entsperre zuerst dein Smartphone. Android oder die Ziel-App können das Öffnen weiterhin verhindern; der Sprachmodus ist nicht garantiert.</string>
+    <string name="stem_shortcut_assistant_behavior">Fordert deinen digitalen Standardassistenten an. Wenn LibrePods im Hintergrund läuft, tippe auf die Benachrichtigung zum Kurzbefehl, um fortzufahren. Benachrichtigungen müssen dafür aktiviert sein. Entsperre zuerst dein Smartphone. Die Verfügbarkeit des Assistenten hängt von deinen Telefoneinstellungen ab; der Sprachmodus ist nicht garantiert.</string>
+    <string name="stem_shortcut_android_action">Android-Aktion</string>
+    <string name="stem_shortcut_camera">Kamera öffnen</string>
+    <string name="stem_shortcut_alarms">Wecker anzeigen</string>
+    <string name="stem_shortcut_none">Kein Ziel gespeichert. Der Standardassistent wird angefordert.</string>
+    <string name="stem_shortcut_target_unavailable">Nicht verfügbar. Der Standardassistent wird angefordert.</string>
+    <string name="stem_shortcut_change">Zum Ändern tippen</string>
+    <string name="stem_shortcut_try">Kurzbefehl ausprobieren</string>
+    <string name="stem_shortcut_loading">Verfügbare Apps und Aktionen werden geladen…</string>
+    <string name="stem_shortcut_load_failed">Verfügbare Apps und Aktionen konnten nicht gelesen werden. Versuche es erneut.</string>
+    <string name="stem_shortcut_save_failed">Dieses Ziel konnte nicht gespeichert werden. Versuche es erneut.</string>
+    <string name="stem_shortcut_no_matches">Keine passenden Apps oder Aktionen verfügbar.</string>
+    <string name="stem_shortcut_retry">Erneut versuchen</string>
+    <string name="stem_shortcut_cancel">Abbrechen</string>
+    <string name="stem_shortcut_left_notification">Kurzbefehl am linken Stiel</string>
+    <string name="stem_shortcut_right_notification">Kurzbefehl am rechten Stiel</string>
+    <string name="stem_shortcut_tap_notification">Entsperre dein Smartphone und tippe, um fortzufahren.</string>
+    <string name="stem_shortcut_notifications_unavailable">Öffne LibrePods, um den Kurzbefehl auszuführen, oder aktiviere in den Telefoneinstellungen die Benachrichtigungen für „Kurzbefehle am Stiel“.</string>
+    <string name="stem_shortcut_preparing">Kurzbefehl am Stiel wird angefordert…</string>
+    <string name="stem_shortcut_expired">Diese Anfrage für den Kurzbefehl ist abgelaufen oder die Einstellungen wurden geändert. Drücke erneut auf den Stiel.</string>
+    <string name="stem_shortcut_unlock">Entsperre dein Smartphone und versuche den Kurzbefehl erneut.</string>
+    <string name="stem_shortcut_assistant_unavailable">Ein digitaler Assistent konnte nicht geöffnet werden. Wähle in den Telefoneinstellungen unter „Standard-Apps“ einen aus und versuche es erneut.</string>
+    <string name="stem_shortcut_fallback_requested">Kurzbefehl nicht verfügbar. Der Standardassistent wurde angefordert; das Öffnen ist nicht bestätigt.</string>
+</resources>

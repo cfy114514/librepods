@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="stem_shortcuts_title">Phím tắt trên cuống tai nghe</string>
+    <string name="stem_shortcut_custom">Ứng dụng hoặc phím tắt</string>
+    <string name="stem_shortcut_choose">Chọn ứng dụng hoặc phím tắt</string>
+    <string name="stem_shortcut_search">Tìm ứng dụng và thao tác</string>
+    <string name="stem_shortcut_supported">Chọn một ứng dụng đã cài đặt hoặc một thao tác Android có sẵn bên dưới. Các phím tắt riêng của ứng dụng trên màn hình chính không được hỗ trợ ở đây. Nếu mục đã chọn không khả dụng, LibrePods sẽ yêu cầu mở trợ lý mặc định.</string>
+    <string name="stem_shortcut_behavior">Nếu không mở được mục đã chọn, LibrePods sẽ yêu cầu mở trợ lý kỹ thuật số mặc định. Khi LibrePods chạy nền, hãy nhấn vào thông báo phím tắt để tiếp tục; bạn cần bật thông báo. Hãy mở khóa điện thoại trước. Android hoặc ứng dụng đích vẫn có thể ngăn việc mở; không đảm bảo sẽ vào chế độ giọng nói.</string>
+    <string name="stem_shortcut_assistant_behavior">Yêu cầu mở trợ lý kỹ thuật số mặc định. Khi LibrePods chạy nền, hãy nhấn vào thông báo phím tắt để tiếp tục; bạn cần bật thông báo. Hãy mở khóa điện thoại trước. Khả năng sử dụng trợ lý phụ thuộc vào cài đặt điện thoại; không đảm bảo sẽ vào chế độ giọng nói.</string>
+    <string name="stem_shortcut_android_action">Thao tác Android</string>
+    <string name="stem_shortcut_camera">Mở máy ảnh</string>
+    <string name="stem_shortcut_alarms">Xem báo thức</string>
+    <string name="stem_shortcut_none">Chưa lưu ứng dụng hoặc thao tác nào. Sẽ yêu cầu mở trợ lý mặc định.</string>
+    <string name="stem_shortcut_target_unavailable">Không khả dụng. Sẽ yêu cầu mở trợ lý mặc định.</string>
+    <string name="stem_shortcut_change">Nhấn để thay đổi</string>
+    <string name="stem_shortcut_try">Thử phím tắt</string>
+    <string name="stem_shortcut_loading">Đang tải ứng dụng và thao tác có sẵn…</string>
+    <string name="stem_shortcut_load_failed">Không đọc được ứng dụng và thao tác có sẵn. Hãy thử lại.</string>
+    <string name="stem_shortcut_save_failed">Không lưu được mục đã chọn. Hãy thử lại.</string>
+    <string name="stem_shortcut_no_matches">Không có ứng dụng hoặc thao tác khả dụng nào phù hợp.</string>
+    <string name="stem_shortcut_retry">Thử lại</string>
+    <string name="stem_shortcut_cancel">Hủy</string>
+    <string name="stem_shortcut_left_notification">Phím tắt trên cuống tai nghe trái</string>
+    <string name="stem_shortcut_right_notification">Phím tắt trên cuống tai nghe phải</string>
+    <string name="stem_shortcut_tap_notification">Mở khóa điện thoại rồi nhấn để tiếp tục.</string>
+    <string name="stem_shortcut_notifications_unavailable">Mở LibrePods để chạy phím tắt, hoặc bật thông báo Phím tắt trên cuống tai nghe trong cài đặt điện thoại.</string>
+    <string name="stem_shortcut_preparing">Đang yêu cầu chạy phím tắt trên cuống tai nghe…</string>
+    <string name="stem_shortcut_expired">Yêu cầu phím tắt này đã hết hạn hoặc cài đặt đã thay đổi. Hãy nhấn cuống tai nghe lần nữa.</string>
+    <string name="stem_shortcut_unlock">Mở khóa điện thoại rồi thử lại phím tắt.</string>
+    <string name="stem_shortcut_assistant_unavailable">Không mở được trợ lý kỹ thuật số. Hãy chọn trợ lý trong phần Ứng dụng mặc định của cài đặt điện thoại rồi thử lại.</string>
+    <string name="stem_shortcut_fallback_requested">Phím tắt không khả dụng. Đã yêu cầu mở trợ lý mặc định; chưa xác nhận trợ lý đã mở.</string>
+</resources>

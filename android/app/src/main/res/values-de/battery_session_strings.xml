@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="battery_session_title">Akkusitzung</string>
+    <string name="battery_session_description">Live-Meldungen dieser Verbindung. Die Restlaufzeit ist grob geschätzt und kann sich je nach Nutzung und Einstellungen ändern.</string>
+    <string name="battery_session_disconnected">Zum Erfassen eines Akkuverlaufs verbinden</string>
+    <string name="battery_session_waiting">Warte auf eine aktuelle Akkumeldung</string>
+    <string name="battery_session_charging">Wird geladen · Schätzung pausiert</string>
+    <string name="battery_session_unavailable">Akkumeldung nicht verfügbar · Verlauf pausiert</string>
+    <string name="battery_session_stale">Keine aktuelle Akkumeldung · Verlauf pausiert</string>
+    <string name="battery_session_clock_changed">Zeitbasis geändert · neuer Verlauf wird erfasst</string>
+    <string name="battery_session_collecting">Verlauf wird erfasst · mindestens 15 Min. nötig</string>
+    <string name="battery_session_insufficient_drain">Zu wenig Akkuänderung für eine Schätzung</string>
+    <string name="battery_session_rough_minutes">Grobe Restlaufzeit: etwa %1$d Min.</string>
+    <string name="battery_session_rough_under_five">Grobe Restlaufzeit: unter 5 Min.</string>
+    <string name="battery_session_trend">%1$d%% → %2$d%% in %3$d Min.</string>
+    <string name="battery_session_level">%1$d%%</string>
+</resources>

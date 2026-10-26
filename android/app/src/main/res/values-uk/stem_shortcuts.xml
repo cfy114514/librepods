@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="stem_shortcuts_title">Швидкі дії на ніжці</string>
+    <string name="stem_shortcut_custom">Програма або швидка дія</string>
+    <string name="stem_shortcut_choose">Вибрати програму або швидку дію</string>
+    <string name="stem_shortcut_search">Пошук програм і дій</string>
+    <string name="stem_shortcut_supported">Виберіть установлену програму або одну з доступних дій Android нижче. Власні швидкі дії програм із головного екрана тут недоступні. Якщо вибраний варіант недоступний, LibrePods натомість надішле запит на відкриття типового асистента.</string>
+    <string name="stem_shortcut_behavior">Якщо вибрану програму чи дію неможливо відкрити, LibrePods надішле запит на відкриття типового цифрового асистента. Коли LibrePods працює у фоні, торкніться сповіщення швидкої дії, щоб продовжити; сповіщення мають бути ввімкнені. Спершу розблокуйте телефон. Android або вибрана програма все одно можуть заборонити відкриття; голосовий режим не гарантовано.</string>
+    <string name="stem_shortcut_assistant_behavior">Надсилає запит на відкриття типового цифрового асистента. Коли LibrePods працює у фоні, торкніться сповіщення швидкої дії, щоб продовжити; сповіщення мають бути ввімкнені. Спершу розблокуйте телефон. Доступність асистента залежить від налаштувань телефону; голосовий режим не гарантовано.</string>
+    <string name="stem_shortcut_android_action">Дія Android</string>
+    <string name="stem_shortcut_camera">Відкрити камеру</string>
+    <string name="stem_shortcut_alarms">Показати будильники</string>
+    <string name="stem_shortcut_none">Збереженої програми чи дії немає. Буде надіслано запит на відкриття типового асистента.</string>
+    <string name="stem_shortcut_target_unavailable">Недоступно. Буде надіслано запит на відкриття типового асистента.</string>
+    <string name="stem_shortcut_change">Торкніться, щоб змінити</string>
+    <string name="stem_shortcut_try">Спробувати швидку дію</string>
+    <string name="stem_shortcut_loading">Завантаження доступних програм і дій…</string>
+    <string name="stem_shortcut_load_failed">Не вдалося прочитати доступні програми та дії. Спробуйте ще раз.</string>
+    <string name="stem_shortcut_save_failed">Не вдалося зберегти цей вибір. Спробуйте ще раз.</string>
+    <string name="stem_shortcut_no_matches">Немає відповідних доступних програм або дій.</string>
+    <string name="stem_shortcut_retry">Повторити</string>
+    <string name="stem_shortcut_cancel">Скасувати</string>
+    <string name="stem_shortcut_left_notification">Швидка дія лівої ніжки</string>
+    <string name="stem_shortcut_right_notification">Швидка дія правої ніжки</string>
+    <string name="stem_shortcut_tap_notification">Розблокуйте телефон і торкніться, щоб продовжити.</string>
+    <string name="stem_shortcut_notifications_unavailable">Відкрийте LibrePods, щоб виконати швидку дію, або ввімкніть сповіщення «Швидкі дії на ніжці» в налаштуваннях телефону.</string>
+    <string name="stem_shortcut_preparing">Надсилання запиту на швидку дію ніжки…</string>
+    <string name="stem_shortcut_expired">Термін дії цього запиту минув або налаштування змінилися. Натисніть ніжку ще раз.</string>
+    <string name="stem_shortcut_unlock">Розблокуйте телефон і спробуйте швидку дію ще раз.</string>
+    <string name="stem_shortcut_assistant_unavailable">Не вдалося відкрити цифрового асистента. Виберіть його в розділі «Програми за замовчуванням» у налаштуваннях телефону та спробуйте ще раз.</string>
+    <string name="stem_shortcut_fallback_requested">Швидка дія недоступна. Надіслано запит на відкриття типового асистента; відкриття не підтверджено.</string>
+</resources>

@@ -136,6 +136,20 @@ jobs:
             2>&1 | tee build/ci-ble-presence.log
           python3 tests/ble-scan-ordering/run.py \
             2>&1 | tee build/ci-ble-scan-ordering.log
+          python3 tests/scene-feedback/run.py \
+            2>&1 | tee build/ci-scene-feedback.log
+          python3 tests/session-health/run.py \
+            2>&1 | tee build/ci-session-health.log
+          python3 tests/stem-dispatch/run.py \
+            2>&1 | tee build/ci-stem-dispatch.log
+          python3 tests/observation-read/run.py \
+            2>&1 | tee build/ci-observation-read.log
+          python3 tests/popup-window/run.py \
+            2>&1 | tee build/ci-popup-window.log
+          python3 tests/island-receiver/run.py \
+            2>&1 | tee build/ci-island-receiver.log
+          python3 tests/popup-trigger/run.py \
+            2>&1 | tee build/ci-popup-trigger.log
 
       - name: Run Android Lint
         id: lint

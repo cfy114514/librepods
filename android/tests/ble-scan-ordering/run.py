@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Compile the production BLE manager and run timestamp-ordering JVM regressions."""
 import argparse
+import hashlib
 import os
 from pathlib import Path
 import shutil
@@ -13,6 +14,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--android-root', type=Path, default=here.parents[1])
     parser.add_argument('--compiler-lib', type=Path)
+    parser.add_argument('--manager-source', type=Path, help='Immutable BLEManager source snapshot for a negative control')
     args = parser.parse_args()
     compiler_lib = args.compiler_lib
     if compiler_lib is None:
@@ -28,6 +30,8 @@ def main():
     sources = [source / ('bluetooth/' + name + '.kt') for name in (
         'BLEManager', 'BleAdvertisementDeduplicator', 'BleLidState', 'BleMaintenanceTask',
         'AirPodsProximityModels', 'CachedRpaVerifier', 'CachedProximityDecryptor')]
+    if args.manager_source:
+        sources[0] = args.manager_source.resolve()
     # The harness can also verify the pre-fix tree, which has no observation helper.
     sources += sorted((source / 'bluetooth').glob('BleObservationOrder.kt'))
     sources += [source / 'utils/BluetoothCryptography.kt', *sorted((here / 'stubs').glob('*.kt')),
@@ -35,6 +39,7 @@ def main():
     for path in sources:
         if not path.is_file():
             parser.error(f'Missing source: {path}')
+        print(f'SOURCE {path} sha256={hashlib.sha256(path.read_bytes()).hexdigest()}', flush=True)
     classpath = os.pathsep.join(map(str, [*compiler_lib.glob('kotlin-stdlib-*.jar'), *compiler_lib.glob('annotations-*.jar')]))
     with tempfile.TemporaryDirectory(prefix='librepods-ble-scan-jvm-') as build:
         print(f'Compiling production source: {sources[0]}', flush=True)

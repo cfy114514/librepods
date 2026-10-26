@@ -93,6 +93,8 @@ def main():
         "PROFILE_QUEUE": between(service, "    private val profileRequests = serviceResources.track(", "    private val batteryWidgetUpdates ="),
         "LISTENER": function(service, "    private val bleStatusListener = object : BLEManager.AirPodsStatusListener {"),
         "NOTIFICATION": function(service, "    fun updateNotificationContent("),
+        "ADAPTER": between(service, "            if (action == BluetoothAdapter.ACTION_STATE_CHANGED) {",
+                           "            if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT)"),
         "TAKEOVER_TYPE": between(service, "    private enum class TakeoverAction", "    private val takeoverGeneration = AtomicLong()"),
         "TAKEOVER": between(service, "    @RequiresApi(Build.VERSION_CODES.R)\n    fun takeOver(", "    @SuppressLint(\"MissingPermission\")\n    private fun performTakeover("),
         "CONNECT_TAKEOVER": function(service, "    private fun connectAudioForTakeover("),

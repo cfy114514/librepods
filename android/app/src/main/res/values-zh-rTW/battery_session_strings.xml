@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="battery_session_title">本次連線的電量</string>
+    <string name="battery_session_description">僅使用本次連線收到的即時回報。剩餘時間為粗略估計，會隨使用方式與設定改變。</string>
+    <string name="battery_session_disconnected">連線後開始記錄電量趨勢</string>
+    <string name="battery_session_waiting">等待即時電量回報</string>
+    <string name="battery_session_charging">正在充電 · 已暫停估計</string>
+    <string name="battery_session_unavailable">電量回報無法使用 · 已暫停趨勢記錄</string>
+    <string name="battery_session_stale">近期無電量回報 · 已暫停趨勢記錄</string>
+    <string name="battery_session_clock_changed">計時基準已變更 · 正在重新記錄趨勢</string>
+    <string name="battery_session_collecting">正在記錄趨勢 · 至少需要 15 分鐘</string>
+    <string name="battery_session_insufficient_drain">電量變化不足，暫時無法估計</string>
+    <string name="battery_session_rough_minutes">粗略估計剩餘：約 %1$d 分鐘</string>
+    <string name="battery_session_rough_under_five">粗略估計剩餘：不到 5 分鐘</string>
+    <string name="battery_session_trend">%3$d 分鐘內從 %1$d%% 降至 %2$d%%</string>
+    <string name="battery_session_level">%1$d%%</string>
+</resources>

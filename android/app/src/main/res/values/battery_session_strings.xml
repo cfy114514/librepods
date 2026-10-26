@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="battery_session_title">Battery session</string>
+    <string name="battery_session_description">Live reports from this connection. Remaining runtime is a rough estimate; use and settings can change it.</string>
+    <string name="battery_session_disconnected">Connect to collect a battery trend</string>
+    <string name="battery_session_waiting">Waiting for a live battery report</string>
+    <string name="battery_session_charging">Charging · estimate paused</string>
+    <string name="battery_session_unavailable">Battery report unavailable · trend paused</string>
+    <string name="battery_session_stale">No recent battery report · trend paused</string>
+    <string name="battery_session_clock_changed">Timing changed · collecting a new trend</string>
+    <string name="battery_session_collecting">Collecting a trend · at least 15 min needed</string>
+    <string name="battery_session_insufficient_drain">Not enough battery change to estimate</string>
+    <string name="battery_session_rough_minutes">Rough remaining: about %1$d min</string>
+    <string name="battery_session_rough_under_five">Rough remaining: under 5 min</string>
+    <string name="battery_session_trend">%1$d%% → %2$d%% over %3$d min</string>
+    <string name="battery_session_level">%1$d%%</string>
+</resources>

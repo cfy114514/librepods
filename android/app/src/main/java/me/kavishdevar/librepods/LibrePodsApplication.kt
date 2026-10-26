@@ -19,6 +19,7 @@ class LibrePodsApplication: Application(), XposedServiceHelper.OnServiceListener
         ProcessLifecycleOwner.get().lifecycle.addObserver(this)
 
         super<Application>.onCreate()
+        me.kavishdevar.librepods.shortcuts.StemShortcutDispatcher.initialize(this)
 
     }
 

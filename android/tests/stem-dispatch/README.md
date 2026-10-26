@@ -1,0 +1,13 @@
+# Stem dispatch regression harness
+
+Run `python3 android/tests/stem-dispatch/run.py --negative-controls` from the repository root. It uses Java and a cached Gradle distribution's Kotlin compiler, without running Gradle or downloading dependencies. `--compiler-lib` selects another cached compiler directory.
+
+The harness snapshots and compiles the production `StemAction`, `StemShortcut`, `AndroidStemShortcuts`, and `StemShortcutDispatchActivity` sources and prints their SHA-256 hashes. Android boundary doubles control clock, activity focus/resume, notification permission, keyguard, notification tokens, and launch outcomes. The real dispatcher, request registry, event guard, activity, launch adapter, and fallback policy execute in each case. PackageManager and platform launch APIs are replaced with explicit outcomes, so these cases do not claim to prove real device launch eligibility or successful voice startup.
+
+The PendingIntent double follows Android's documented update/cancel/one-shot contract. This reproduced three baseline failures: an expired token acquiring a newer request's extras, repeated sends of the same notification token, and repeated handling by separate Activity instances. The final cases also cover device selection, same-address session rollover, transport replacement, service replacement, permission loss, cold-process missing requests, replacement per side, aged reader events, missing targets/assistants, keyguard, notification denial, focus ordering, and valid public foreground/non-long-press assistant requests. A resolution callback retires the source or advances the elapsed clock inside the real adapter’s PackageManager resolution; neither a target launch nor assistant fallback may follow. Another case re-locks the keyguard during resolution and checks the same boundary with unlock feedback. These final checks do not make Android launch atomic with a future disconnect or lock.
+
+Negative controls remove source validation, one-use consumption, and launch revalidation in isolated copies. Each must fail its targeted runtime assertion. Production files are never mutated by the runner.
+
+The Handler double does not run delayed callbacks. Scheduled closure cleanup and callback replacement are statically reviewed; launch expiry itself is enforced and exercised through the actual elapsed-time check.
+
+Android contracts: [PendingIntent identity, update, cancel, and one-shot behavior](https://developer.android.com/reference/android/app/PendingIntent), [background activity starts](https://developer.android.com/guide/components/activities/background-starts).

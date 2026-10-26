@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="battery_session_title">Phiên pin</string>
+    <string name="battery_session_description">Số liệu trực tiếp từ kết nối này. Thời gian còn lại chỉ là ước tính sơ bộ và có thể thay đổi theo cách sử dụng và cài đặt.</string>
+    <string name="battery_session_disconnected">Kết nối để ghi nhận xu hướng pin</string>
+    <string name="battery_session_waiting">Đang chờ số liệu pin trực tiếp</string>
+    <string name="battery_session_charging">Đang sạc · tạm dừng ước tính</string>
+    <string name="battery_session_unavailable">Không có số liệu pin · tạm dừng xu hướng</string>
+    <string name="battery_session_stale">Không có số liệu pin gần đây · tạm dừng xu hướng</string>
+    <string name="battery_session_clock_changed">Mốc thời gian thay đổi · đang ghi nhận xu hướng mới</string>
+    <string name="battery_session_collecting">Đang ghi nhận xu hướng · cần ít nhất 15 phút</string>
+    <string name="battery_session_insufficient_drain">Mức pin thay đổi chưa đủ để ước tính</string>
+    <string name="battery_session_rough_minutes">Ước tính sơ bộ còn: khoảng %1$d phút</string>
+    <string name="battery_session_rough_under_five">Ước tính sơ bộ còn: dưới 5 phút</string>
+    <string name="battery_session_trend">%1$d%% → %2$d%% trong %3$d phút</string>
+    <string name="battery_session_level">%1$d%%</string>
+</resources>

@@ -25,6 +25,7 @@ import android.bluetooth.BluetoothSocket
 import me.kavishdevar.librepods.BuildConfig
 import me.kavishdevar.librepods.utils.OwnedCallbackSlot
 import java.io.Closeable
+import java.util.concurrent.atomic.AtomicLong
 import me.kavishdevar.librepods.data.Capability
 import me.kavishdevar.librepods.data.CustomEq
 import java.nio.ByteBuffer
@@ -203,6 +204,24 @@ class AACPManager {
 
     @Volatile private var deviceStateGeneration = 0L
 
+    /** Incoming device values only. The ordinary cache also contains optimistic local writes. */
+    internal data class ReceivedControlCommand(
+        val identifier: ControlCommandIdentifiers, val value: ByteArray,
+        val deviceSession: Long, val sequence: Long
+    )
+    private val receivedControlSequence = AtomicLong()
+    private val receivedControlObservers = linkedMapOf<Any, (ReceivedControlCommand) -> Unit>()
+
+    // Called under the output stream lock: never acquire the manager monitor here.
+    internal fun captureReceivedControlSequence(): Long = receivedControlSequence.get()
+
+    @Synchronized
+    internal fun observeReceivedControlCommands(observer: (ReceivedControlCommand) -> Unit): Closeable {
+        val token = Any()
+        receivedControlObservers[token] = observer
+        return Closeable { synchronized(this) { receivedControlObservers.remove(token) } }
+    }
+
     @Synchronized
     internal fun beginDeviceSession(): Long {
         resetDeviceState()
@@ -323,9 +342,22 @@ class AACPManager {
     }
 
     internal fun parseAndStoreControlCommand(packet: ByteArray, canStore: () -> Boolean = { true }): ControlCommand? {
+        val generation = deviceStateGeneration
+        val current = { isCurrentDeviceSession(generation) && canStore() }
         val command = ControlCommand.fromByteArray(packet)
         val identifier = ControlCommandIdentifiers.fromByte(command.identifier) ?: return null
-        if (!setControlCommandStatusValue(identifier, command.value, canStore)) return null
+        // Stamp before ordinary listeners: a listener may synchronously cause another write.
+        val sequence = receivedControlSequence.incrementAndGet()
+        val (report, observers) = synchronized(this) {
+            if (!current()) return null
+            ReceivedControlCommand(identifier, command.value.copyOf(), generation, sequence) to
+                receivedControlObservers.values.toList()
+        }
+        if (!setControlCommandStatusValue(identifier, command.value, current)) return null
+        observers.forEach { observer ->
+            if (current()) runCatching { observer(report.copy(value = report.value.copyOf())) }
+                .onFailure { Log.w(TAG, "Device control observer failed", it) }
+        }
         return command
     }
 
@@ -1211,6 +1243,14 @@ class AACPManager {
     /** Queued settings retain the connection selected when the user edited them. */
     @OptIn(ExperimentalStdlibApi::class)
     fun sendPacket(packet: ByteArray, socket: BluetoothSocket, canSend: () -> Boolean = { true }): Boolean {
+        return sendPacketObserved(packet, socket, null, canSend)
+    }
+
+    /** A successful write is transport evidence, not a device acknowledgement. */
+    @OptIn(ExperimentalStdlibApi::class)
+    internal fun sendPacketObserved(
+        packet: ByteArray, socket: BluetoothSocket, onDispatch: (() -> Unit)?, canSend: () -> Boolean = { true }
+    ): Boolean {
         val generation = deviceStateGeneration
         try {
             if (packet.size < 5) return false
@@ -1233,7 +1273,9 @@ class AACPManager {
                 isCurrentDeviceSession(generation) && socket === BluetoothConnectionManager.aacpSocket && socket.isConnected && canSend() &&
                     (mode == null || listeningModes?.let { mode in it() } != false)
             }
-            if (!writeCurrentPacket(packet, current, { socket.outputStream })) return false
+            if (!writeCurrentPacket(packet, current, { socket.outputStream }, beforeWrite = {
+                runCatching { onDispatch?.invoke() }.onFailure { Log.w(TAG, "Command dispatch observer failed", it) }
+            })) return false
             // Failed or retired writes cannot populate the cache for the current link.
             if (controlCommand != null && current()) {
                 setControlCommandStatusValue(ControlCommandIdentifiers.fromByte(controlCommand.identifier)!!, controlCommand.value, current)

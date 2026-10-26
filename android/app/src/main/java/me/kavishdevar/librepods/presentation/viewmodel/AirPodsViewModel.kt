@@ -44,6 +44,7 @@ import androidx.lifecycle.viewModelScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -70,6 +71,14 @@ import me.kavishdevar.librepods.data.ControlCommandRepository
 import me.kavishdevar.librepods.data.CustomEq
 import me.kavishdevar.librepods.data.StemAction
 import me.kavishdevar.librepods.data.RemoteXposedPreferences
+import me.kavishdevar.librepods.data.SceneApplyState
+import me.kavishdevar.librepods.data.SceneCommand
+import me.kavishdevar.librepods.data.SceneContext
+import me.kavishdevar.librepods.data.ScenePresetController
+import me.kavishdevar.librepods.data.ScenePresetId
+import me.kavishdevar.librepods.data.SceneSetting
+import me.kavishdevar.librepods.data.scenePresetPlans
+import me.kavishdevar.librepods.data.sceneSettingSupported
 import me.kavishdevar.librepods.services.AirPodsService
 import me.kavishdevar.librepods.services.HeadTrackingStatus
 import me.kavishdevar.librepods.services.ServiceManager
@@ -85,6 +94,7 @@ data class AirPodsUiState(
     val serviceBindingId: Long = 0,
 
     val isLocallyConnected: Boolean = false,
+    val canApplyScenePresets: Boolean = false,
 
     val instance: AirPodsInstance? = null,
     val capabilities: Set<Capability> = emptySet(),
@@ -259,6 +269,10 @@ class AirPodsViewModel(
     private var headPreviewStatusJob: Job? = null
     private var headPreviewStatusToken: Any? = null
     private val customEqWriteKey = 256
+    private val sceneController = ScenePresetController()
+    val sceneApplyState: StateFlow<SceneApplyState> = sceneController.state
+    private var sceneReportObserver: Closeable? = null
+    private var sceneTimeoutJob: Job? = null
 
     var isReady by mutableStateOf(false)
         private set
@@ -312,6 +326,7 @@ class AirPodsViewModel(
         loadInstance()
         loadSharedPreferences()
         observeAACP()
+        observeSceneReports()
         loadCurrentStatus()
         loadEq()
         loadATT()
@@ -321,12 +336,24 @@ class AirPodsViewModel(
         observeRemoteXposedPreferences()
         if (isDemoMode) activateDemoMode()
         isReady = true
+        synchronizeSceneContext()
         renewHeadPreviewLease()
     }
 
     private val _uiState = MutableStateFlow(AirPodsUiState())
 
     val uiState: StateFlow<AirPodsUiState> = _uiState
+
+    internal val deviceInsightsEnabled: Boolean get() = !isDemoMode
+
+    internal fun captureConnectionHealth(): me.kavishdevar.librepods.data.ConnectionHealthSnapshot? {
+        if (isDemoMode || !::service.isInitialized) return null
+        val owner = service
+        if (ServiceManager.getService() !== owner) return null
+        return owner.captureConnectionHealth()?.takeIf {
+            !isDemoMode && service === owner && ServiceManager.getService() === owner
+        }
+    }
 
     @Volatile private var isDemoMode = false
 
@@ -394,6 +421,12 @@ class AirPodsViewModel(
     }
 
     private fun clearObservers() {
+        sceneTimeoutJob?.cancel()
+        sceneTimeoutJob = null
+        sceneReportObserver?.close()
+        sceneReportObserver = null
+        sceneController.setContext(null)
+        _uiState.update { it.copy(canApplyScenePresets = false) }
         remotePreferencesJob?.cancel()
         remotePreferencesJob = null
         attRefreshes?.close()
@@ -495,10 +528,11 @@ class AirPodsViewModel(
                         if (BluetoothConnectionManager.aacpSocket?.isConnected == true) return
                         clearATTJobs()
                         _uiState.update {
-                            it.copy(isLocallyConnected = false, controlStates = emptyMap(), ancMode = 1,
+                            it.copy(isLocallyConnected = false, canApplyScenePresets = false, controlStates = emptyMap(), ancMode = 1,
                                 eqData = floatArrayOf(), customEq = CustomEq(1, 50, 50, 50),
                                 loudSoundReductionEnabled = false, hearingAidData = byteArrayOf(), transparencyData = byteArrayOf())
                         }
+                        synchronizeSceneContext()
                     }
 
                     AirPodsNotifications.BATTERY_DATA -> {
@@ -539,10 +573,15 @@ class AirPodsViewModel(
     fun setControlCommandValue(
         identifier: ControlCommandIdentifiers, value: ByteArray
     ) {
+        sceneSetting(identifier)?.let {
+            synchronizeSceneContext()
+            sceneController.supersede(it)
+        }
         val ownedValue = value.copyOf()
         if (!isDemoMode) {
             if (identifier == ControlCommandIdentifiers.LISTENING_MODE ||
-                identifier == ControlCommandIdentifiers.CONVERSATION_DETECT_CONFIG) {
+                identifier == ControlCommandIdentifiers.CONVERSATION_DETECT_CONFIG ||
+                identifier == ControlCommandIdentifiers.ADAPTIVE_VOLUME_CONFIG) {
                 val writer = controlWrites
                 val version = settingsVersion.get()
                 if (writer != null) service.enqueueInteractiveCommand(identifier.value, ownedValue,
@@ -583,6 +622,99 @@ class AirPodsViewModel(
         identifier: ControlCommandIdentifiers, value: Byte
     ) {
         setControlCommandValue(identifier, byteArrayOf(value))
+    }
+
+    private fun sceneSetting(identifier: ControlCommandIdentifiers): SceneSetting? = when (identifier) {
+        ControlCommandIdentifiers.LISTENING_MODE -> SceneSetting.LISTENING_MODE
+        ControlCommandIdentifiers.CONVERSATION_DETECT_CONFIG -> SceneSetting.CONVERSATION_AWARENESS
+        ControlCommandIdentifiers.ADAPTIVE_VOLUME_CONFIG -> SceneSetting.PERSONALIZED_VOLUME
+        else -> null
+    }
+
+    private fun sceneIdentifier(setting: SceneSetting): ControlCommandIdentifiers = when (setting) {
+        SceneSetting.LISTENING_MODE -> ControlCommandIdentifiers.LISTENING_MODE
+        SceneSetting.CONVERSATION_AWARENESS -> ControlCommandIdentifiers.CONVERSATION_DETECT_CONFIG
+        SceneSetting.PERSONALIZED_VOLUME -> ControlCommandIdentifiers.ADAPTIVE_VOLUME_CONFIG
+    }
+
+    private fun currentSceneContext(): SceneContext? {
+        if (!isReady || isDemoMode || !::service.isInitialized || ServiceManager.getService() !== service) return null
+        val state = _uiState.value
+        val peer = state.selectedPeer ?: return null
+        if (peer != me.kavishdevar.librepods.data.batteryHistoryIdentity(sharedPreferences.getString("mac_address", "") ?: "")) return null
+        val socket = BluetoothConnectionManager.aacpSocket ?: return null
+        if (!service.isCurrentControlSocket(socket)) return null
+        return SceneContext(peer, state.selectedPeerVersion, state.serviceBindingId, service.aacpManager.captureDeviceSession())
+    }
+
+    private fun synchronizeSceneContext() {
+        val context = currentSceneContext()
+        sceneController.setContext(context)
+        _uiState.update { it.copy(canApplyScenePresets = context != null) }
+    }
+
+    private fun observeSceneReports() {
+        val owner = service
+        sceneReportObserver?.close()
+        sceneReportObserver = owner.aacpManager.observeReceivedControlCommands { report ->
+            if (service !== owner) return@observeReceivedControlCommands
+            val context = currentSceneContext() ?: return@observeReceivedControlCommands
+            if (context.deviceSession != report.deviceSession) return@observeReceivedControlCommands
+            val setting = sceneSetting(report.identifier) ?: return@observeReceivedControlCommands
+            // All preset controls are single-byte settings. Unknown payloads cannot confirm them.
+            val value = report.value.singleOrNull()?.toInt() ?: return@observeReceivedControlCommands
+            sceneController.received(context, setting, value, report.sequence)
+        }
+    }
+
+    private fun isSceneCommandCurrent(owner: AirPodsService, command: SceneCommand): Boolean {
+        val state = _uiState.value
+        return service === owner && currentSceneContext() == command.context && sceneController.isCurrent(command) &&
+            sceneSettingSupported(command.target, state.capabilities, state.isPremium)
+    }
+
+    fun applyScenePreset(id: ScenePresetId) {
+        synchronizeSceneContext()
+        val context = currentSceneContext() ?: return
+        val state = _uiState.value
+        val plan = scenePresetPlans(state.capabilities, state.isPremium).find { it.id == id } ?: return
+        val owner = service
+        val commands = sceneController.begin(context, plan)
+        if (commands.isEmpty()) return
+        sceneTimeoutJob?.cancel()
+        commands.forEach { command ->
+            val accepted = owner.enqueueInteractiveCommand(
+                sceneIdentifier(command.target.setting).value, byteArrayOf(command.target.value.toByte()),
+                valid = { isSceneCommandCurrent(owner, command) },
+                onComplete = {
+                    sceneController.dispatchCompleted(command)
+                },
+                onDispatch = {
+                    // The hook runs after the final connection check, under the output lock.
+                    // The sequence read is atomic and does not take the AACP manager monitor.
+                    sceneController.writeStarted(command, owner.aacpManager.captureReceivedControlSequence())
+                },
+                onWritten = { written ->
+                    sceneController.writeFinished(command, written)
+                }
+            )
+            if (!accepted) sceneController.rejected(command)
+        }
+        val attempt = commands.first().attempt
+        sceneTimeoutJob = viewModelScope.launch {
+            // Bound the entire manual attempt, including queue time. Check ownership promptly
+            // even if a transport disappears without an immediately delivered broadcast.
+            repeat(80) {
+                delay(100)
+                synchronizeSceneContext()
+                val latest = _uiState.value
+                sceneController.retainSupported(commands.filter {
+                    sceneSettingSupported(it.target, latest.capabilities, latest.isPremium)
+                }.map { it.target.setting }.toSet())
+                if (!sceneController.state.value.isApplying) return@launch
+            }
+            sceneController.expire(attempt)
+        }
     }
 
     fun observeControl(identifier: ControlCommandIdentifiers) {
@@ -681,6 +813,7 @@ class AirPodsViewModel(
                 )
             }
         }
+        synchronizeSceneContext()
     }
 
     private fun loadSharedPreferences() {
@@ -829,6 +962,7 @@ class AirPodsViewModel(
                 version3 = instance?.version3 ?: ""
             )
         }
+        synchronizeSceneContext()
     }
 
     fun reconnectFromSavedMac() {
@@ -1108,6 +1242,7 @@ class AirPodsViewModel(
         settingsVersion.incrementAndGet()
         isDemoMode = true
         _uiState.update { demoState.copy(serviceBindingId = it.serviceBindingId) }
+        synchronizeSceneContext()
     }
 
     fun sendPhoneMediaEQ(eq: FloatArray, phoneByte: Byte, mediaByte: Byte) {
@@ -1144,6 +1279,9 @@ class AirPodsViewModel(
     }
 
     fun disconnect() {
+        sceneTimeoutJob?.cancel()
+        sceneController.setContext(null)
+        _uiState.update { it.copy(canApplyScenePresets = false) }
         if (isDemoMode) {
             settingsVersion.incrementAndGet()
             isDemoMode = false
