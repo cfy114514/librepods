@@ -230,9 +230,9 @@ class IslandWindow(private val context: Context) {
         val batteryIntentFilter = IntentFilter(AirPodsNotifications.BATTERY_DATA)
         batteryIntentFilter.addAction(AirPodsNotifications.DISCONNECT_RECEIVERS)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            context.registerReceiver(batteryReceiver, batteryIntentFilter, Context.RECEIVER_EXPORTED)
+            this.context.registerReceiver(batteryReceiver, batteryIntentFilter, Context.RECEIVER_EXPORTED)
         } else {
-            context.registerReceiver(batteryReceiver, batteryIntentFilter)
+            this.context.registerReceiver(batteryReceiver, batteryIntentFilter)
         }
 
         ServiceManager.getService()?.sendBatteryBroadcast()

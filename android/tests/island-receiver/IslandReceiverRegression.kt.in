@@ -1,0 +1,279 @@
+package me.kavishdevar.librepods.presentation.overlays
+
+import java.util.IdentityHashMap
+
+private object Build {
+    object VERSION { var SDK_INT = 33 }
+    object VERSION_CODES { const val TIRAMISU = 33 }
+}
+private object AirPodsNotifications {
+    const val BATTERY_DATA = "battery"
+    const val DISCONNECT_RECEIVERS = "disconnect"
+}
+private class Battery
+private class Intent(val action: String) {
+    fun <T> getParcelableArrayListExtra(name: String): ArrayList<T>? = null
+    fun <T> getParcelableArrayListExtra(name: String, type: Class<T>): ArrayList<T>? = null
+}
+private class IntentFilter(action: String) {
+    val actions = mutableSetOf(action)
+    fun addAction(action: String) { actions += action }
+}
+private abstract class BroadcastReceiver { abstract fun onReceive(context: Context?, intent: Intent?) }
+
+// Modeled Android boundary: LoadedApk keys dispatchers by registering Context
+// and receiver identity. A different Context cannot unregister that dispatcher.
+// Delivery supplies its registering Context, as ReceiverDispatcher.Args does.
+private class Context(val name: String, private val registry: ReceiverRegistry) {
+    fun registerReceiver(receiver: BroadcastReceiver, filter: IntentFilter, flags: Int? = null) {
+        registry.register(this, receiver, filter, flags)
+    }
+    fun unregisterReceiver(receiver: BroadcastReceiver) { registry.unregister(this, receiver) }
+    companion object { const val RECEIVER_EXPORTED = 2 }
+}
+private class ReceiverRegistry {
+    data class Registration(val receiver: BroadcastReceiver, val filter: IntentFilter, val flags: Int?)
+    private val registrations = IdentityHashMap<Context, IdentityHashMap<BroadcastReceiver, Registration>>()
+    var registrationCalls = 0
+    var wrongOwnerAttempts = 0
+    val size: Int get() = registrations.values.sumOf { it.size }
+    fun register(owner: Context, receiver: BroadcastReceiver, filter: IntentFilter, flags: Int?) {
+        registrationCalls++
+        registrations.getOrPut(owner) { IdentityHashMap() }[receiver] = Registration(receiver, filter, flags)
+    }
+    fun unregister(owner: Context, receiver: BroadcastReceiver) {
+        if (registrations[owner]?.remove(receiver) == null) {
+            if (registrations.values.any { it.containsKey(receiver) }) wrongOwnerAttempts++
+            throw IllegalArgumentException("Receiver not registered with ${owner.name}")
+        }
+    }
+    fun ownedBy(owner: Context) = registrations[owner]?.values?.toList().orEmpty()
+    fun broadcast(action: String): Int {
+        val recipients = registrations.entries.flatMap { (owner, entries) ->
+            entries.values.filter { action in it.filter.actions }.map { owner to it.receiver }
+        }
+        for ((owner, receiver) in recipients) receiver.onReceive(owner, Intent(action))
+        return recipients.size
+    }
+}
+
+private object MainQueue {
+    var onMain = true
+    private val posts = ArrayDeque<() -> Unit>()
+    fun post(action: () -> Unit) { posts.addLast(action) }
+    fun background(action: () -> Unit) {
+        check(onMain)
+        onMain = false
+        try { action() } finally { onMain = true }
+    }
+    fun drain() { check(onMain); while (posts.isNotEmpty()) posts.removeFirst().invoke() }
+}
+private object Looper {
+    private val main = Any()
+    fun getMainLooper() = main
+    fun myLooper(): Any? = if (MainQueue.onMain) main else null
+}
+private class Handler(looper: Any) {
+    fun post(action: () -> Unit) = MainQueue.post(action)
+    fun removeCallbacks(runnable: Runnable) = Unit
+}
+private object Animations {
+    private val pending = ArrayDeque<() -> Unit>()
+    fun post(action: () -> Unit) { pending.addLast(action) }
+    fun finish() { while (pending.isNotEmpty()) pending.removeFirst().invoke() }
+}
+private open class Animator { fun cancel() = Unit }
+private open class AnimatorListenerAdapter { open fun onAnimationEnd(animation: Animator) = Unit }
+private class ObjectAnimator : Animator() {
+    var duration = 0L
+    var interpolator: Any? = null
+    private var listener: AnimatorListenerAdapter? = null
+    fun addListener(value: AnimatorListenerAdapter) { listener = value }
+    fun start() { Animations.post { listener?.onAnimationEnd(this) } }
+    companion object {
+        fun ofPropertyValuesHolder(view: View, vararg values: PropertyValuesHolder) = ObjectAnimator()
+    }
+}
+private class PropertyValuesHolder {
+    companion object { fun ofFloat(name: String, vararg values: Float) = PropertyValuesHolder() }
+}
+private class AnticipateOvershootInterpolator
+private class VideoView { fun stopPlayback() = Unit }
+private class View {
+    var parent: Any? = Any()
+    var visibility = 0
+    var scaleX = 1f
+    var scaleY = 1f
+    var translationY = 0f
+    fun <T> findViewById(id: Int): T = VideoView() as T
+    companion object {
+        const val GONE = 8
+        const val SCALE_X = "scaleX"
+        const val SCALE_Y = "scaleY"
+        const val TRANSLATION_Y = "translationY"
+    }
+}
+private class WindowManager { fun removeView(view: View) { view.parent = null } }
+private object R { object id { const val island_video_view = 1 } }
+private fun e(tag: String, message: String) = Unit
+private enum class IslandType { CONNECTED }
+private class Service(private val registry: ReceiverRegistry) {
+    var islandOpen = false
+    fun sendBatteryBroadcast() { registry.broadcast(AirPodsNotifications.BATTERY_DATA) }
+}
+private object ServiceManager {
+    var current: Service? = null
+    fun getService() = current
+}
+
+// The class header preserves constructor ownership; the original show signature
+// preserves parameter shadowing. All extracted receiver/close bodies are unchanged.
+private @@CLASS@@
+    private val windowManager = WindowManager()
+    private val islandView = View()
+    private val containerView = View()
+    private var isClosing = false
+    private val springAnimation = Animator()
+    private val flingAnimator = Animator()
+    private var autoCloseHandler: Handler? = Handler(Looper.getMainLooper())
+    private var autoCloseRunnable: Runnable? = Runnable { close() }
+    var batteryUpdates = 0
+        private set
+    private fun updateBatteryDisplay(batteryList: ArrayList<Battery>?) { batteryUpdates++ }
+    private fun resetStretchEffects() = Unit
+
+@@RECEIVER@@
+
+@@SHOW_GATE@@
+        // UI setup is outside this focused ownership test.
+@@REGISTRATION@@
+    }
+
+@@CLOSE@@
+
+@@CLEANUP@@
+
+@@FORCE_CLOSE@@
+}
+
+private class Fixture {
+    val registry = ReceiverRegistry()
+    val applicationContext = Context("Application", registry)
+    val serviceContext = Context("Service", registry)
+    val service = Service(registry)
+    val window = IslandWindow(applicationContext)
+    init { ServiceManager.current = service }
+    fun show(target: IslandWindow = window) { target.show("AirPods", 80, serviceContext) }
+    fun verifyNoReceiver(target: IslandWindow = window) {
+        val updates = target.batteryUpdates
+        check(registry.size == 0) { "Closed island retains ${registry.size} receiver(s); wrong-owner attempts=${registry.wrongOwnerAttempts}" }
+        check(registry.broadcast(AirPodsNotifications.BATTERY_DATA) == 0)
+        check(target.batteryUpdates == updates) { "Closed island still consumes battery broadcasts" }
+        check(!service.islandOpen)
+    }
+}
+
+fun main() {
+    var total = 0
+    var failures = 0
+    fun scenario(sdk: Int, name: String, body: Fixture.() -> Unit) {
+        total++
+        Build.VERSION.SDK_INT = sdk
+        val standardError = System.err
+        val diagnostics = java.io.ByteArrayOutputStream()
+        // Some unchanged close paths catch an already-unregistered receiver and
+        // print it. Retain diagnostics on a failed case, keep passing output concise.
+        System.setErr(java.io.PrintStream(diagnostics))
+        try { Fixture().body(); println("PASS API $sdk $name") }
+        catch (failure: Throwable) {
+            failures++
+            println("FAIL API $sdk $name: ${failure.message}")
+            if (diagnostics.size() > 0) print(diagnostics.toString())
+        } finally {
+            System.setErr(standardError)
+            MainQueue.drain()
+            Animations.finish()
+            ServiceManager.current = null
+        }
+    }
+    for (sdk in listOf(32, 33)) {
+        scenario(sdk, "normal close releases receiver before its animation finishes") {
+            show()
+            check(window.batteryUpdates == 1)
+            window.close()
+            verifyNoReceiver()
+            Animations.finish()
+            verifyNoReceiver()
+        }
+        scenario(sdk, "force close releases receiver") {
+            show()
+            window.forceClose()
+            verifyNoReceiver()
+        }
+        scenario(sdk, "registration uses constructor owner and preserves actions and flags") {
+            show()
+            val registration = registry.ownedBy(applicationContext).singleOrNull()
+                ?: error("Receiver is not registered with constructor Application context")
+            check(registry.ownedBy(serviceContext).isEmpty())
+            check(registration.filter.actions == setOf(AirPodsNotifications.BATTERY_DATA, AirPodsNotifications.DISCONNECT_RECEIVERS))
+            check(registration.flags == if (sdk >= 33) Context.RECEIVER_EXPORTED else null)
+            check(registry.broadcast(AirPodsNotifications.BATTERY_DATA) == 1)
+            check(window.batteryUpdates == 2)
+        }
+        scenario(sdk, "disconnect callback releases its owner then normal close is safe") {
+            show()
+            check(registry.broadcast(AirPodsNotifications.DISCONNECT_RECEIVERS) == 1)
+            check(registry.size == 0 && registry.wrongOwnerAttempts == 0)
+            check(registry.broadcast(AirPodsNotifications.DISCONNECT_RECEIVERS) == 0)
+            window.close()
+            verifyNoReceiver()
+        }
+        scenario(sdk, "disconnect callback followed by force close leaves no receiver") {
+            show()
+            check(registry.broadcast(AirPodsNotifications.DISCONNECT_RECEIVERS) == 1)
+            window.forceClose()
+            verifyNoReceiver()
+            check(registry.wrongOwnerAttempts == 0)
+        }
+        scenario(sdk, "repeated show is gated and repeated close does not retain a receiver") {
+            show()
+            show()
+            check(registry.registrationCalls == 1)
+            window.close()
+            window.close()
+            Animations.finish()
+            window.close()
+            verifyNoReceiver()
+        }
+        scenario(sdk, "replacement island has only its own battery subscriber") {
+            show()
+            window.close()
+            val replacement = IslandWindow(applicationContext)
+            show(replacement)
+            check(registry.size == 1) { "Replacement inherited a receiver from the closed island" }
+            val oldUpdates = window.batteryUpdates
+            check(registry.broadcast(AirPodsNotifications.BATTERY_DATA) == 1)
+            check(window.batteryUpdates == oldUpdates)
+            check(replacement.batteryUpdates == 2)
+            Animations.finish()
+            replacement.forceClose()
+            verifyNoReceiver(replacement)
+        }
+        scenario(sdk, "background close releases receiver on Main") {
+            show()
+            MainQueue.background { window.close() }
+            check(registry.size == 1)
+            MainQueue.drain()
+            verifyNoReceiver()
+        }
+        scenario(sdk, "background force close releases receiver on Main") {
+            show()
+            MainQueue.background { window.forceClose() }
+            check(registry.size == 1)
+            MainQueue.drain()
+            verifyNoReceiver()
+        }
+    }
+    println("$total scenarios, $failures failures")
+    check(failures == 0)
+}
