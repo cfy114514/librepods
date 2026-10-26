@@ -1,0 +1,246 @@
+package me.kavishdevar.librepods.services
+
+import java.io.Closeable
+import java.util.concurrent.CountDownLatch
+import java.util.concurrent.Executors
+import java.util.concurrent.TimeUnit
+import me.kavishdevar.librepods.data.*
+
+private const val PEER = "12:34:56:78:9A:BC"
+private const val OTHER_PEER = "12:34:56:78:9A:BD"
+private annotation class SuppressLint(vararg val value: String)
+private object Manifest { object permission { const val BLUETOOTH_CONNECT = "bluetooth" } }
+private object PackageManager { const val PERMISSION_GRANTED = 0 }
+private object BluetoothConnectionManager
+private class BluetoothSocket
+private class BluetoothDevice(val address: String)
+private class BluetoothAdapter(var read: () -> Boolean = { true }) { val isEnabled get() = read() }
+private class BluetoothManager(val adapter: BluetoothAdapter = BluetoothAdapter())
+private class Resources { @Volatile var isClosed = false }
+private object ServiceManager {
+    @Volatile var current: AirPodsService? = null
+    fun getService() = current
+}
+private class BluetoothProfile(val read: () -> Int) {
+    fun getConnectionState(target: BluetoothDevice) = read()
+    companion object {
+        const val A2DP = 2
+        const val HEADSET = 1
+        const val STATE_DISCONNECTED = 0
+        const val STATE_CONNECTING = 1
+        const val STATE_CONNECTED = 2
+        const val STATE_DISCONNECTING = 3
+    }
+}
+
+/** Framework surfaces and event injection only; observation policy below comes from production. */
+private class AirPodsService {
+    private val serviceResources = Resources()
+    val manager = BluetoothManager()
+    @Volatile var granted = true
+    @Volatile var now = 1_000L
+    private val batteryRepository = BatterySessionRepository { now }
+    private val batterySessionLease = batteryRepository.claim()
+    private val connectionHealth = ConnectionHealthMonitor { now }
+    init { connectionHealth.selectPeer(PEER); connectionHealth.started(); ServiceManager.current = this }
+    private fun checkSelfPermission(permission: String) = if (granted) PackageManager.PERMISSION_GRANTED else -1
+    @Suppress("UNCHECKED_CAST")
+    private fun <T> getSystemService(kind: Class<T>): T? = manager as T
+
+@@CONTROL_TYPES@@
+
+@@OBSERVATION_METHODS@@
+
+    class Connection(private val battery: (Long) -> Boolean, private val packet: (Long) -> Boolean) {
+        fun battery(at: Long) = battery.invoke(at)
+        fun packet(at: Long) = packet.invoke(at)
+    }
+
+    fun connect(peer: String = PEER): Connection {
+        val device = BluetoothDevice(peer)
+        val connectedSocket = BluetoothSocket()
+        var observations: ControlObservations? = null
+        synchronized(BluetoothConnectionManager) {
+@@PUBLISH@@
+        }
+        val captured = requireNotNull(observations)
+        return Connection(
+            { at -> captured.battery?.recordReceived(listOf(Battery(BatteryComponent.LEFT, 70, BatteryStatus.NOT_CHARGING)), at) == true },
+            { at -> captured.health?.let { connectionHealth.controlPacket(it, at) } == true })
+    }
+
+    fun batterySnapshot() = batteryRepository.snapshots.value
+    fun healthSnapshot() = connectionHealth.snapshot()
+    fun query(profile: BluetoothProfile) = observedProfileConnectionState(profile, BluetoothDevice(PEER), BluetoothProfile.A2DP)
+    fun select(peer: String) = synchronized(BluetoothConnectionManager) { connectionHealth.selectPeer(peer) }
+    fun close() { serviceResources.isClosed = true; batterySessionLease.close(); connectionHealth.close() }
+}
+
+private fun expect(condition: Boolean, message: String) { if (!condition) throw AssertionError(message) }
+private fun CountDownLatch.reached(name: String) = expect(await(5, TimeUnit.SECONDS), "Timed out waiting for $name")
+private fun withBlockedRead(read: () -> Boolean, replace: () -> Unit, expected: Boolean = false) {
+    val worker = Executors.newSingleThreadExecutor { Thread(it, "observation-read-regression").apply { isDaemon = true } }
+    try {
+        val future = worker.submit<Boolean> { read() }
+        replace()
+        expect(future.get(5, TimeUnit.SECONDS) == expected, "Stale read must return unavailable")
+    } finally {
+        worker.shutdownNow()
+        expect(worker.awaitTermination(5, TimeUnit.SECONDS), "Read worker must terminate")
+    }
+}
+
+private fun staleAdapterReadCannotRetireReconnect() {
+    val service = AirPodsService()
+    val old = service.connect()
+    val captured = CountDownLatch(1)
+    val release = CountDownLatch(1)
+    service.manager.adapter.read = { captured.countDown(); release.reached("adapter result release"); false }
+    lateinit var replacement: AirPodsService.Connection
+    withBlockedRead(service::deviceObservationAvailable, {
+        captured.reached("adapter result capture")
+        service.now++
+        replacement = service.connect()
+        release.countDown()
+    })
+    expect(service.batterySnapshot().connected, "Delayed adapter result retired replacement battery connection")
+    expect(replacement.battery(service.now), "Replacement reader must keep accepting battery packets")
+    expect(replacement.packet(service.now), "Delayed adapter result retired replacement control ticket")
+    expect(!old.battery(service.now) && !old.packet(service.now), "Old reader must remain retired")
+}
+
+private fun staleProfileDenialCannotRetireReconnect() {
+    val service = AirPodsService()
+    service.connect()
+    val captured = CountDownLatch(1)
+    val release = CountDownLatch(1)
+    val proxy = BluetoothProfile { captured.countDown(); release.reached("profile denial release"); throw SecurityException("denied") }
+    lateinit var replacement: AirPodsService.Connection
+    withBlockedRead({
+        try { service.query(proxy); throw AssertionError("Profile query must rethrow denial") }
+        catch (_: SecurityException) { false }
+    }, {
+        captured.reached("profile query capture")
+        service.now++
+        replacement = service.connect()
+        release.countDown()
+    })
+    expect(service.batterySnapshot().connected, "Delayed profile denial retired replacement battery connection")
+    expect(replacement.battery(service.now), "Replacement battery packet must remain accepted")
+    expect(replacement.packet(service.now), "Delayed profile denial retired replacement control ticket")
+}
+
+private fun probeWithoutConnectionCannotRetireFirstConnection() {
+    val service = AirPodsService()
+    val captured = CountDownLatch(1)
+    val release = CountDownLatch(1)
+    service.manager.adapter.read = { captured.countDown(); release.reached("first connection release"); false }
+    lateinit var first: AirPodsService.Connection
+    withBlockedRead(service::deviceObservationAvailable, {
+        captured.reached("initially empty probe")
+        first = service.connect()
+        release.countDown()
+    })
+    expect(first.battery(service.now) && first.packet(service.now), "Empty probe must not retire newly opened observations")
+}
+
+private fun currentAdapterLossRetiresBothConsumers() {
+    val service = AirPodsService()
+    val connection = service.connect()
+    expect(service.deviceObservationAvailable(), "Current enabled adapter is available")
+    service.manager.adapter.read = { false }
+    expect(!service.deviceObservationAvailable(), "Current adapter off is unavailable")
+    expect(!service.batterySnapshot().connected, "Current loss must retire battery connection")
+    expect(service.healthSnapshot().control == null, "Current loss must invalidate health evidence")
+    expect(!connection.battery(service.now) && !connection.packet(service.now), "Both old consumers must reject packets after loss")
+}
+
+private fun currentPermissionLossSkipsAdapterAndRetires() {
+    val service = AirPodsService()
+    service.connect()
+    service.granted = false
+    var queried = false
+    service.manager.adapter.read = { queried = true; true }
+    expect(!service.deviceObservationAvailable(), "Denied permission is unavailable")
+    expect(!queried, "Permission denial must skip the adapter query")
+    expect(!service.batterySnapshot().connected && service.healthSnapshot().control == null, "Current denial must retire both consumers")
+}
+
+private fun currentProfileDenialRetiresAndRethrows() {
+    val service = AirPodsService()
+    service.connect()
+    try { service.query(BluetoothProfile { throw SecurityException("denied") }); throw AssertionError("Expected denial") }
+    catch (_: SecurityException) { }
+    expect(!service.batterySnapshot().connected && service.healthSnapshot().control == null, "Current profile denial must retire both consumers")
+}
+
+private fun replacementServiceFencesLateTrueRead() {
+    val service = AirPodsService()
+    service.connect()
+    val captured = CountDownLatch(1)
+    val release = CountDownLatch(1)
+    service.manager.adapter.read = { captured.countDown(); release.reached("service replacement release"); true }
+    withBlockedRead(service::deviceObservationAvailable, {
+        captured.reached("old service adapter query")
+        AirPodsService()
+        release.countDown()
+    })
+}
+
+private fun closedServiceFencesLateTrueRead() {
+    val service = AirPodsService()
+    service.connect()
+    val captured = CountDownLatch(1)
+    val release = CountDownLatch(1)
+    service.manager.adapter.read = { captured.countDown(); release.reached("service close release"); true }
+    withBlockedRead(service::deviceObservationAvailable, {
+        captured.reached("closing service adapter query")
+        service.close()
+        release.countDown()
+    })
+}
+
+private fun reselectionFencesProbeWithoutControlOwnerChange() {
+    val service = AirPodsService()
+    val captured = CountDownLatch(1)
+    val release = CountDownLatch(1)
+    service.manager.adapter.read = { captured.countDown(); release.reached("peer selection release"); false }
+    var selectionGeneration = -1L
+    withBlockedRead(service::deviceObservationAvailable, {
+        captured.reached("old selection probe")
+        service.select(OTHER_PEER)
+        service.select(PEER)
+        selectionGeneration = service.healthSnapshot().selectionGeneration
+        release.countDown()
+    })
+    expect(service.healthSnapshot().selectionGeneration == selectionGeneration, "Late read invalidated a new same-address selection")
+}
+
+private fun normalProfileObservationRetainsEvidence() {
+    val service = AirPodsService()
+    expect(service.query(BluetoothProfile { BluetoothProfile.STATE_CONNECTED }) == BluetoothProfile.STATE_CONNECTED, "Original profile result must be returned")
+    expect(service.healthSnapshot().profiles[HealthAudioProfile.MEDIA]?.state == HealthProfileState.CONNECTED, "Successful current query must still publish media evidence")
+}
+
+fun main(arguments: Array<String>) {
+    val cases = listOf(
+        "stale_adapter_read_cannot_retire_reconnect" to ::staleAdapterReadCannotRetireReconnect,
+        "stale_profile_denial_cannot_retire_reconnect" to ::staleProfileDenialCannotRetireReconnect,
+        "empty_probe_cannot_retire_first_connection" to ::probeWithoutConnectionCannotRetireFirstConnection,
+        "current_adapter_loss_retires_both_consumers" to ::currentAdapterLossRetiresBothConsumers,
+        "current_permission_loss_skips_adapter_and_retires" to ::currentPermissionLossSkipsAdapterAndRetires,
+        "current_profile_denial_retires_and_rethrows" to ::currentProfileDenialRetiresAndRethrows,
+        "replacement_service_fences_late_true_read" to ::replacementServiceFencesLateTrueRead,
+        "closed_service_fences_late_true_read" to ::closedServiceFencesLateTrueRead,
+        "reselection_fences_probe_without_control_change" to ::reselectionFencesProbeWithoutControlOwnerChange,
+        "normal_profile_observation_retains_evidence" to ::normalProfileObservationRetainsEvidence,
+    ).filter { arguments.isEmpty() || it.first == arguments[0] }
+    expect(cases.isNotEmpty(), "Unknown test case")
+    var failures = 0
+    for ((name, test) in cases) {
+        try { test(); println("PASS $name") }
+        catch (error: Throwable) { failures++; println("FAIL $name: ${error.message}"); error.printStackTrace(System.out) }
+    }
+    println("${cases.size - failures}/${cases.size} observation-read regression cases passed")
+    if (failures != 0) throw AssertionError("$failures regression cases failed")
+}
