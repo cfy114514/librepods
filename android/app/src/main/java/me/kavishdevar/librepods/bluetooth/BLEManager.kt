@@ -249,8 +249,8 @@ class BLEManager(private val context: Context) {
         mostRecentAddress = null
         lidState.reset()
         lastBroadcastTime = 0
-        // Retain the observation watermark: delayed pre-stop advertisements
-        // must not revive presence, but a new observation can reopen the lid.
+        // Retain the observation watermark: previously accepted timestamps
+        // stay retired, but a newer observation can reopen the lid.
         try {
             if (scanner != null && callback != null) {
                 Log.d(TAG, "Stopping BLE scanner")

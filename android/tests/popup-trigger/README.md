@@ -24,3 +24,9 @@ BLE delivery, or physical lid detection. The service still responds to authentic
 BLE lid transitions; an AACP reconnect alone does not force a bottom popup. Missing
 permission or disabled settings do not replay the old opening when later enabled.
 BLE's existing timeout can infer a closed lid after advertising silence.
+
+`python3 tests/popup-trigger/negative-controls.py --output-dir /tmp/popup-controls`
+checks six source mutants: missing close reset, unguarded old close callback,
+failed-attach latching, removed permission recheck, lost scan generation retirement,
+and absent adapter recovery. Each must compile and fail its exact runtime assertion;
+compiler errors cannot satisfy a control.
