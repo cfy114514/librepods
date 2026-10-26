@@ -1,5 +1,7 @@
 package me.kavishdevar.librepods.data
 
+import java.util.UUID
+
 /** Only public Android actions that can be requested without launcher access. */
 enum class SupportedStemShortcut(val id: String) {
     CAMERA("camera"),
@@ -136,6 +138,40 @@ fun readStemShortcutBinding(
 }
 
 const val STEM_SHORTCUT_REQUEST_LIFETIME_MS = 60_000L
+
+/** Main-thread requests retain their original owner until the Activity consumes them, at most one per side. */
+class StemShortcutRequests(private val newId: () -> String = { UUID.randomUUID().toString() }) {
+    class Request internal constructor(
+        val id: String,
+        val binding: StemShortcutBinding,
+        val createdAt: Long,
+        private val isSourceCurrent: () -> Boolean,
+    ) {
+        fun isCurrent(now: Long, currentBinding: (StemShortcutBinding) -> StemShortcutBinding?): Boolean = try {
+            isStemShortcutRequestCurrent(binding, currentBinding(binding), createdAt, now) && isSourceCurrent()
+        } catch (_: RuntimeException) {
+            false // Permission or service ownership can disappear while the request is pending.
+        }
+    }
+    private val pending = mutableMapOf<StemShortcutSide, Request>()
+
+    fun register(binding: StemShortcutBinding, createdAt: Long, isSourceCurrent: () -> Boolean): String {
+        val request = Request(newId(), binding, createdAt, isSourceCurrent)
+        pending[binding.side] = request
+        return request.id
+    }
+
+    fun discard(id: String) {
+        pending.entries.removeAll { it.value.id == id }
+    }
+
+    fun consume(id: String?, now: Long, currentBinding: (StemShortcutBinding) -> StemShortcutBinding?): Request? {
+        val request = pending.values.firstOrNull { it.id == id } ?: return null
+        pending.remove(request.binding.side)
+        // Remove before invoking callbacks: replay, recreation, and failed attempts cannot consume twice.
+        return request.takeIf { it.isCurrent(now, currentBinding) }
+    }
+}
 
 /** Window focus and resume can arrive in either order. Consume a dispatch only once. */
 class StemShortcutDispatchLifecycle(handled: Boolean = false) {

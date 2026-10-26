@@ -12,6 +12,8 @@ import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
 import android.os.SystemClock
 import android.view.Gravity
 import android.widget.TextView
@@ -22,10 +24,10 @@ import me.kavishdevar.librepods.data.AndroidStemShortcuts
 import me.kavishdevar.librepods.data.STEM_SHORTCUT_REQUEST_LIFETIME_MS
 import me.kavishdevar.librepods.data.StemAction
 import me.kavishdevar.librepods.data.StemShortcutBinding
-import me.kavishdevar.librepods.data.StemShortcutCodec
 import me.kavishdevar.librepods.data.StemShortcutDelivery
 import me.kavishdevar.librepods.data.StemShortcutDispatchLifecycle
 import me.kavishdevar.librepods.data.StemShortcutResult
+import me.kavishdevar.librepods.data.StemShortcutRequests
 import me.kavishdevar.librepods.data.StemShortcutPress
 import me.kavishdevar.librepods.data.StemShortcutSide
 import me.kavishdevar.librepods.data.deliverStemShortcut
@@ -36,11 +38,7 @@ import me.kavishdevar.librepods.data.stemShortcutNotificationAllowed
 import me.kavishdevar.librepods.data.stemString
 
 private const val CHANNEL_ID = "stem_shortcuts"
-private const val EXTRA_SIDE = "stem_side"
-private const val EXTRA_ACTION = "stem_action"
-private const val EXTRA_TARGET = "stem_target"
-private const val EXTRA_CREATED_AT = "stem_created_at"
-private const val EXTRA_PRESS = "stem_press"
+private const val EXTRA_REQUEST_ID = "stem_request_id"
 
 private fun currentBinding(context: Context, side: StemShortcutSide, press: StemShortcutPress): StemShortcutBinding? {
     val preferences = context.getSharedPreferences("settings", Context.MODE_PRIVATE)
@@ -51,6 +49,9 @@ private fun currentBinding(context: Context, side: StemShortcutSide, press: Stem
 object StemShortcutDispatcher {
     private var initialized = false
     private var resumedActivity: WeakReference<Activity>? = null
+    private val requests = StemShortcutRequests()
+    private val expiryHandler = Handler(Looper.getMainLooper())
+    private val expiryCallbacks = mutableMapOf<StemShortcutSide, Runnable>()
 
     fun initialize(application: Application) {
         if (initialized) return
@@ -72,22 +73,29 @@ object StemShortcutDispatcher {
 
     fun request(context: Context, side: StemShortcutSide, press: StemShortcutPress = StemShortcutPress.LONG_PRESS) {
         val binding = currentBinding(context, side, press) ?: return
-        request(context, binding, SystemClock.elapsedRealtime())
+        request(context, binding, SystemClock.elapsedRealtime(), isSourceCurrent = { true })
     }
 
-    internal fun request(context: Context, binding: StemShortcutBinding, createdAt: Long) {
+    internal fun request(
+        context: Context,
+        binding: StemShortcutBinding,
+        createdAt: Long,
+        isSourceCurrent: () -> Boolean,
+    ) {
         val side = binding.side
         val press = binding.press
         if (!isStemShortcutRequestCurrent(binding, currentBinding(context, side, press),
                 createdAt, SystemClock.elapsedRealtime())) return
+        val requestId = requests.register(binding, createdAt, isSourceCurrent)
+        expiryCallbacks.remove(side)?.let(expiryHandler::removeCallbacks)
+        val expiry = Runnable { requests.discard(requestId); expiryCallbacks.remove(side) }
+        expiryCallbacks[side] = expiry
+        expiryHandler.postDelayed(expiry, (STEM_SHORTCUT_REQUEST_LIFETIME_MS -
+            (SystemClock.elapsedRealtime() - createdAt)).coerceAtLeast(0) + 1)
         val intent = Intent(context, StemShortcutDispatchActivity::class.java)
             .setAction("${context.packageName}.STEM_SHORTCUT.${side.id}")
             .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            .putExtra(EXTRA_SIDE, side.id)
-            .putExtra(EXTRA_PRESS, press.name)
-            .putExtra(EXTRA_ACTION, binding.action.name)
-            .putExtra(EXTRA_TARGET, binding.target?.let(StemShortcutCodec::encode))
-            .putExtra(EXTRA_CREATED_AT, createdAt)
+            .putExtra(EXTRA_REQUEST_ID, requestId)
         val keyguard = context.getSystemService(KeyguardManager::class.java)
         val locked = keyguard.isKeyguardLocked || keyguard.isDeviceLocked
         // ProcessLifecycleOwner deliberately delays pause events; it cannot prove launch eligibility.
@@ -101,9 +109,15 @@ object StemShortcutDispatcher {
             postNotification = { postNotification(context, side, intent) },
         )
         if (result == StemShortcutDelivery.UNAVAILABLE) {
+            requests.discard(requestId)
             Toast.makeText(context, R.string.stem_shortcut_notifications_unavailable, Toast.LENGTH_LONG).show()
         }
     }
+
+    internal fun consume(context: Context, intent: Intent): StemShortcutRequests.Request? =
+        requests.consume(intent.getStringExtra(EXTRA_REQUEST_ID), SystemClock.elapsedRealtime()) {
+            currentBinding(context, it.side, it.press)
+        }
 
     private fun postNotification(context: Context, side: StemShortcutSide, intent: Intent): Boolean = try {
         val manager = context.getSystemService(NotificationManager::class.java)
@@ -116,9 +130,9 @@ object StemShortcutDispatcher {
                 manager.getNotificationChannel(CHANNEL_ID)?.importance?.let { it != NotificationManager.IMPORTANCE_NONE } == true)) {
             false
         } else {
-            // Side participates in PendingIntent identity. Content is generic; a target is never mislabeled.
+            // Replacing a side cancels its old token; sending consumes it without claiming launch success.
             val pending = PendingIntent.getActivity(context, notificationId(side), intent,
-                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+                PendingIntent.FLAG_CANCEL_CURRENT or PendingIntent.FLAG_ONE_SHOT or PendingIntent.FLAG_IMMUTABLE)
             val notification = Notification.Builder(context, CHANNEL_ID)
                 .setSmallIcon(R.drawable.airpods)
                 .setContentTitle(context.getString(if (side == StemShortcutSide.LEFT) R.string.stem_shortcut_left_notification else R.string.stem_shortcut_right_notification))
@@ -176,25 +190,31 @@ class StemShortcutDispatchActivity : Activity() {
     private fun dispatchOnce() {
         if (isFinishing) return
         try {
-            val side = StemShortcutSide.fromString(intent.getStringExtra(EXTRA_SIDE)) ?: return
-            val press = StemShortcutPress.fromString(intent.getStringExtra(EXTRA_PRESS)) ?: return
-            val action = intent.getStringExtra(EXTRA_ACTION)?.let(StemAction::fromString) ?: return
-            if (action != StemAction.CUSTOM_SHORTCUT && action != StemAction.DIGITAL_ASSISTANT) return
-            val requested = StemShortcutBinding(side, action, StemShortcutCodec.decode(intent.getStringExtra(EXTRA_TARGET)), press)
-            if (!isStemShortcutRequestCurrent(requested, currentBinding(this, side, press),
-                    intent.getLongExtra(EXTRA_CREATED_AT, -1), SystemClock.elapsedRealtime())) {
+            val requested = StemShortcutDispatcher.consume(this, intent)
+            if (requested == null) {
                 Toast.makeText(this, R.string.stem_shortcut_expired, Toast.LENGTH_LONG).show()
                 return
             }
             val launcher = AndroidStemShortcuts(this)
             val keyguard = getSystemService(KeyguardManager::class.java)
-            val result = executeStemShortcut(requested.target,
-                keyguard.isKeyguardLocked || keyguard.isDeviceLocked) { launcher.attempt(this, it) }
-            val message = when (result) {
+            var requestCurrent = true
+            var locked = keyguard.isKeyguardLocked || keyguard.isDeviceLocked
+            val canLaunch = {
+                // Once retired, no fallback may revive this consumed request.
+                requestCurrent = requestCurrent && requested.isCurrent(SystemClock.elapsedRealtime()) {
+                    currentBinding(this, it.side, it.press)
+                }
+                locked = locked || keyguard.isKeyguardLocked || keyguard.isDeviceLocked
+                requestCurrent && !locked
+            }
+            val result = executeStemShortcut(requested.binding.target,
+                locked) { launcher.attempt(this, it, canLaunch) }
+            val message = if (!requestCurrent) R.string.stem_shortcut_expired
+                else if (locked) R.string.stem_shortcut_unlock else when (result) {
                 StemShortcutResult.LOCKED -> R.string.stem_shortcut_unlock
                 StemShortcutResult.ASSISTANT_UNAVAILABLE -> R.string.stem_shortcut_assistant_unavailable
                 StemShortcutResult.ASSISTANT_REQUESTED_UNCONFIRMED ->
-                    if (action == StemAction.CUSTOM_SHORTCUT) R.string.stem_shortcut_fallback_requested else null
+                    if (requested.binding.action == StemAction.CUSTOM_SHORTCUT) R.string.stem_shortcut_fallback_requested else null
                 StemShortcutResult.TARGET_REQUESTED_UNCONFIRMED -> null
             }
             message?.let { Toast.makeText(this, it, Toast.LENGTH_LONG).show() }

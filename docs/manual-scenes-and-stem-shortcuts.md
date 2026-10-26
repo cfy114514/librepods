@@ -61,8 +61,12 @@ configured default assistant through the public foreground assist API, then the
 ASSIST and VOICE_COMMAND intents. If none is available, it prompts the user to
 configure a default assistant. A nonthrowing launch is only a request; Android or
 the target app may still prevent opening, and voice startup is not guaranteed.
-Notification requests expire and are rechecked against the saved binding before
-execution. Existing assistant assignments for other press types remain supported.
+Requests expire after one minute and are consumed once. Each side retains only
+its latest pending request. The saved binding, original connection and age are
+rechecked before execution and again before launching a target or requesting an
+assistant. Disconnecting, selecting another device, or restarting the app expires
+pending stem requests. Existing assistant assignments for other press types remain
+supported.
 
 ## Verification and platform limits
 
@@ -71,6 +75,7 @@ Run both flavor suites from `android/`:
 ```sh
 ./gradlew :app:testFossDebugUnitTest :app:testPlayDebugUnitTest
 python3 tests/scene-feedback/run.py --negative-controls
+python3 tests/stem-dispatch/run.py --negative-controls
 ```
 
 The source harness compiles production AACP, transport and scene logic with small

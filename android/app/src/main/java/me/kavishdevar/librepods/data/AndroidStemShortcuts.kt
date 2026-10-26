@@ -69,7 +69,8 @@ class AndroidStemShortcuts(private val context: Context) {
         SupportedStemShortcut.ALARMS -> R.string.stem_shortcut_alarms
     })
 
-    fun attempt(activity: Activity, request: StemLaunchRequest): StemLaunchAttempt {
+    fun attempt(activity: Activity, request: StemLaunchRequest, canLaunch: () -> Boolean): StemLaunchAttempt {
+        if (!canLaunch()) return StemLaunchAttempt.FAILED
         if (request == StemLaunchRequest.CurrentAssistant) {
             // Public API for the currently configured assistant, including voice-interaction services.
             // The caller must be the foreground activity. A true return still does not prove voice startup.
@@ -82,6 +83,8 @@ class AndroidStemShortcuts(private val context: Context) {
             StemLaunchRequest.VoiceCommand -> availableIntent(Intent(Intent.ACTION_VOICE_COMMAND))
             StemLaunchRequest.CurrentAssistant -> null
         } ?: return StemLaunchAttempt.UNAVAILABLE
+        // Resolution may cross Binder while the originating connection or request expires.
+        if (!canLaunch()) return StemLaunchAttempt.FAILED
         // The pure dispatcher catches disappearing handlers and SecurityException before trying fallback.
         activity.startActivity(intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK))
         return StemLaunchAttempt.REQUESTED_UNCONFIRMED

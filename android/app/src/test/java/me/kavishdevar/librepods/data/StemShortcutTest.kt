@@ -291,4 +291,60 @@ class StemShortcutTest {
         queued()
         assertEquals(1, deliveries)
     }
+
+    @Test fun postedRequestRetainsOriginalOwnerUntilConsumptionAndCannotReplay() {
+        val requests = StemShortcutRequests()
+        val binding = StemShortcutBinding(StemShortcutSide.LEFT, StemAction.CUSTOM_SHORTCUT, app)
+        var currentOwner = true
+        val retired = requests.register(binding, 100) { currentOwner }
+        currentOwner = false
+        assertNull(requests.consume(retired, 101) { binding })
+        currentOwner = true
+        assertNull(requests.consume(retired, 102) { binding })
+        val valid = requests.register(binding, 100) { currentOwner }
+        assertEquals(binding, requests.consume(valid, 103) { binding }?.binding)
+        assertNull(requests.consume(valid, 104) { binding })
+    }
+
+    @Test fun consumedRequestCanRevalidateItsOwnerBindingAndAgeBeforeLaunch() {
+        val requests = StemShortcutRequests()
+        val binding = StemShortcutBinding(StemShortcutSide.LEFT, StemAction.CUSTOM_SHORTCUT, app)
+        var sourceCurrent = true
+        val id = requests.register(binding, 100) { sourceCurrent }
+        val request = requests.consume(id, 101) { binding }!!
+        assertTrue(request.isCurrent(102) { binding })
+        assertFalse(request.isCurrent(60_101) { binding })
+        assertFalse(request.isCurrent(102) { binding.copy(target = camera) })
+        sourceCurrent = false
+        assertFalse(request.isCurrent(102) { binding })
+        assertNull(requests.consume(id, 102) { binding })
+    }
+
+    @Test fun replacingOneSideKeepsTheOtherSideAndDoesNotReviveOlderTokens() {
+        val requests = StemShortcutRequests()
+        val left = StemShortcutBinding(StemShortcutSide.LEFT, StemAction.CUSTOM_SHORTCUT, app)
+        val right = left.copy(side = StemShortcutSide.RIGHT)
+        val old = requests.register(left, 100) { true }
+        val other = requests.register(right, 100) { true }
+        val current = requests.register(left, 200) { true }
+        assertNull(requests.consume(old, 201) { left })
+        assertEquals(right, requests.consume(other, 201) { right }?.binding)
+        assertEquals(left, requests.consume(current, 201) { left }?.binding)
+    }
+
+    @Test fun expiredChangedThrowingOrDiscardedRequestsFailClosed() {
+        val requests = StemShortcutRequests()
+        val binding = StemShortcutBinding(StemShortcutSide.LEFT, StemAction.CUSTOM_SHORTCUT, app)
+        val expired = requests.register(binding, 100) { true }
+        assertNull(requests.consume(expired, 60_101) { binding })
+        val changed = requests.register(binding, 100) { true }
+        assertNull(requests.consume(changed, 101) { binding.copy(target = camera) })
+        val denied = requests.register(binding, 100) { throw SecurityException("Permission revoked") }
+        assertNull(requests.consume(denied, 101) { binding })
+        val discarded = requests.register(binding, 100) { true }
+        requests.discard(discarded)
+        assertNull(requests.consume(discarded, 101) { binding })
+        assertNull(StemShortcutRequests().consume("from previous process", 101) { binding })
+        assertNull(requests.consume(null, 101) { binding })
+    }
 }
