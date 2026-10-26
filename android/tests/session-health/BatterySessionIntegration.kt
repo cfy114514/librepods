@@ -5,14 +5,21 @@ import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicInteger
 import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import me.kavishdevar.librepods.bluetooth.AACPManager
 import me.kavishdevar.librepods.bluetooth.BluetoothConnectionManager
 import me.kavishdevar.librepods.data.AirPodsNotifications
 import me.kavishdevar.librepods.data.BatterySessionRepository
+import me.kavishdevar.librepods.data.BatterySessionObserver
+import me.kavishdevar.librepods.data.BatterySessionPresentation
 import me.kavishdevar.librepods.data.BatterySessionEstimateState
+import me.kavishdevar.librepods.data.BATTERY_SESSION_AVAILABILITY_MAX_AGE_MS
 import me.kavishdevar.librepods.data.batterySessionPresentation
 import me.kavishdevar.librepods.data.recordBatterySessionPacket
 
@@ -338,6 +345,194 @@ private fun longRawSessionRetainsBoundedRealObservations() {
     }
 }
 
+private fun blockedAvailabilityCannotFreezeTheActualDisplayFlow() = runBlocking {
+    BatteryFixture().use { f ->
+        repeat(4) { index ->
+            if (index > 0) f.clock.advance(5 * MINUTE)
+            f.receive(batteryFrame(left = 90 - index))
+        }
+        val observer = BatterySessionObserver(PEER_A)
+        val ticks = MutableStateFlow(0L)
+        val shown = Channel<BatterySessionPresentation>(Channel.UNLIMITED)
+        observer.start()
+        observer.refreshAvailability({ f.clock.now }) { true }
+        val display = observer.presentations(f.repository.snapshots, ticks) { f.clock.now }
+        val collector = launch(start = CoroutineStart.UNDISPATCHED) { display.collect { shown.send(it) } }
+        val release = CountDownLatch(1)
+        val entered = CountDownLatch(1)
+        var reader: kotlinx.coroutines.Job? = null
+        try {
+            expectEquals(BatterySessionEstimateState.ROUGH_ESTIMATE,
+                withTimeout(5_000) { shown.receive() }.left.state, "Real flow initially shows a mature estimate")
+            f.clock.advance(1)
+            reader = launch {
+                observer.refreshAvailability({ f.clock.now }) {
+                    entered.countDown()
+                    release.await()
+                    true
+                }
+            }
+            // Yield the coroutine that enters the actual production IO read, without a timed sleep.
+            kotlinx.coroutines.yield()
+            entered.reached("Availability read entered")
+            f.clock.advance(BATTERY_SESSION_AVAILABILITY_MAX_AGE_MS - 1)
+            expectEquals(BatterySessionEstimateState.ROUGH_ESTIMATE,
+                withTimeout(5_000) { display.first() }.left.state,
+                "Availability remains usable exactly at its age boundary")
+            f.clock.advance(2)
+            val before = f.snapshot()
+            ticks.value++
+            expectEquals(BatterySessionEstimateState.DISCONNECTED,
+                withTimeout(5_000) { shown.receive() }.left.state,
+                "Display clock withdraws estimate while availability query remains blocked")
+            expectEquals(BatterySessionEstimateState.ROUGH_ESTIMATE,
+                batterySessionPresentation(PEER_A, f.snapshot(), f.clock.now).left.state,
+                "This regression expires availability while the raw battery evidence is still fresh")
+            var extraReads = 0
+            observer.refreshAvailability({ f.clock.now }) { extraReads++; true }
+            expectEquals(0, extraReads, "A blocked availability read cannot accumulate more reads")
+            release.countDown()
+            reader.join()
+            expectEquals(BatterySessionEstimateState.DISCONNECTED, withTimeout(5_000) { display.first() }.left.state,
+                "A slow successful query keeps its start timestamp and cannot revive an estimate")
+            expectEquals(before, f.snapshot(), "Display and availability activity never create raw observations")
+        } finally {
+            release.countDown()
+            reader?.join()
+            observer.close()
+            collector.cancel()
+            collector.join()
+            shown.close()
+        }
+    }
+}
+
+private fun lifecycleStopFencesBlockedReadsAndObservedLossRetiresTheSegment() = runBlocking {
+    BatteryFixture().use { f ->
+        repeat(4) { index ->
+            if (index > 0) f.clock.advance(5 * MINUTE)
+            f.receive(batteryFrame(left = 90 - index))
+        }
+        val observer = BatterySessionObserver(PEER_A)
+        val ticks = MutableStateFlow(0L)
+        val shown = Channel<BatterySessionPresentation>(Channel.UNLIMITED)
+        observer.start()
+        observer.refreshAvailability({ f.clock.now }) { true }
+        val display = observer.presentations(f.repository.snapshots, ticks) { f.clock.now }
+        val collector = launch(start = CoroutineStart.UNDISPATCHED) { display.collect { shown.send(it) } }
+        val release = CountDownLatch(1)
+        val entered = CountDownLatch(1)
+        var reader: kotlinx.coroutines.Job? = null
+        try {
+            expectEquals(BatterySessionEstimateState.ROUGH_ESTIMATE,
+                withTimeout(5_000) { shown.receive() }.left.state, "Started observer has a current estimate")
+            reader = launch {
+                observer.refreshAvailability({ f.clock.now }) {
+                    entered.countDown()
+                    release.await()
+                    true
+                }
+            }
+            kotlinx.coroutines.yield()
+            entered.reached("Availability read entered before stop")
+            observer.stop()
+            expectEquals(BatterySessionEstimateState.DISCONNECTED,
+                withTimeout(5_000) { shown.receive() }.left.state,
+                "Stop immediately clears the actual display flow without waiting for Binder")
+            observer.start()
+            var extraReads = 0
+            observer.refreshAvailability({ f.clock.now }) { extraReads++; true }
+            expectEquals(0, extraReads, "Stop/start does not overlap the previous observer read")
+            release.countDown()
+            reader.join()
+            expectEquals(BatterySessionEstimateState.DISCONNECTED, withTimeout(5_000) { display.first() }.left.state,
+                "An old generation cannot publish after stop/start ABA")
+            observer.refreshAvailability({ f.clock.now }) { true }
+            expectEquals(BatterySessionEstimateState.ROUGH_ESTIMATE,
+                withTimeout(5_000) { shown.receive() }.left.state, "A new availability query can resume fresh evidence")
+            observer.refreshAvailability({ f.clock.now }) {
+                // The service availability helper retires the captured session on observed loss.
+                f.connection.close()
+                false
+            }
+            expectEquals(BatterySessionEstimateState.DISCONNECTED,
+                withTimeout(5_000) { shown.receive() }.left.state, "Observed permission/adapter loss retires the session")
+            observer.refreshAvailability({ f.clock.now }) { true }
+            expectEquals(BatterySessionEstimateState.DISCONNECTED, withTimeout(5_000) { display.first() }.left.state,
+                "Availability recovery alone cannot revive the retired raw segment")
+        } finally {
+            release.countDown()
+            reader?.join()
+            observer.close()
+            collector.cancel()
+            collector.join()
+            shown.close()
+        }
+    }
+}
+
+private fun blockedAvailabilityStillAllowsPacketsDisconnectAndCancellation() = runBlocking {
+    BatteryFixture().use { f ->
+        f.receive()
+        val observer = BatterySessionObserver(PEER_A)
+        val ticks = MutableStateFlow(0L)
+        val shown = Channel<BatterySessionPresentation>(Channel.UNLIMITED)
+        observer.start()
+        observer.refreshAvailability({ f.clock.now }) { true }
+        val display = observer.presentations(f.repository.snapshots, ticks) { f.clock.now }
+        val collector = launch(start = CoroutineStart.UNDISPATCHED) { display.collect { shown.send(it) } }
+        val release = CountDownLatch(1)
+        val entered = CountDownLatch(1)
+        var reader: kotlinx.coroutines.Job? = null
+        try {
+            expectEquals(BatterySessionEstimateState.COLLECTING,
+                withTimeout(5_000) { shown.receive() }.left.state, "Fresh raw packet reaches the observer")
+            reader = launch {
+                observer.refreshAvailability({ f.clock.now }) {
+                    entered.countDown()
+                    release.await()
+                    true
+                }
+            }
+            kotlinx.coroutines.yield()
+            entered.reached("Availability read entered before raw changes")
+            f.receive(batteryFrame(leftStatus = 1), at = f.clock.advance(1))
+            val charging = withTimeout(5_000) { shown.receive() }
+            expectEquals(BatterySessionEstimateState.CHARGING, charging.left.state,
+                "A blocked query cannot delay an actual charging report")
+            expect(charging.left.points.isEmpty() && charging.left.roughRemainingMinutes == null,
+                "Charging immediately removes the old discharge evidence")
+            f.connection.close()
+            expectEquals(BatterySessionEstimateState.DISCONNECTED,
+                withTimeout(5_000) { shown.receive() }.left.state,
+                "A blocked query cannot delay raw connection retirement")
+            observer.stop()
+            reader.cancel()
+            observer.start()
+            var extraReads = 0
+            observer.refreshAvailability({ f.clock.now }) { extraReads++; true }
+            expectEquals(0, extraReads, "Cancellation does not free a still-running blocking read")
+            release.countDown()
+            reader.join()
+            observer.refreshAvailability({ f.clock.now }) { extraReads++; true }
+            expectEquals(1, extraReads, "A cancelled read releases its slot after the IO call returns")
+            expectEquals(BatterySessionEstimateState.DISCONNECTED, withTimeout(5_000) { display.first() }.left.state,
+                "Fresh availability still cannot revive the closed raw connection")
+            observer.close()
+            observer.start()
+            observer.refreshAvailability({ f.clock.now }) { extraReads++; true }
+            expectEquals(1, extraReads, "Disposing an observer prevents any later query")
+        } finally {
+            release.countDown()
+            reader?.join()
+            observer.close()
+            collector.cancel()
+            collector.join()
+            shown.close()
+        }
+    }
+}
+
 internal fun batteryCases(): List<IntegrationCase> = listOf(
     "battery_cache_write_and_flow_restart_are_not_observations" to ::cachesWritesAndCollectorRestartsDoNotCreateObservations,
     "battery_malformed_and_absent_connection_do_not_record" to ::malformedFramesAndAbsentConnectionCannotRecord,
@@ -349,4 +544,7 @@ internal fun batteryCases(): List<IntegrationCase> = listOf(
     "battery_raw_component_identity_and_interruptions_are_independent" to ::rawComponentIdentityAndInterruptionsKeepBudsIndependent,
     "battery_delivery_age_silence_gap_and_clock_do_not_bridge" to ::deliveryAgeSilenceGapAndClockRollbackDoNotBridgeEvidence,
     "battery_long_raw_session_retains_bounded_real_observations" to ::longRawSessionRetainsBoundedRealObservations,
+    "battery_blocked_availability_cannot_freeze_display_flow" to ::blockedAvailabilityCannotFreezeTheActualDisplayFlow,
+    "battery_lifecycle_stop_fences_blocked_reads_and_recovery" to ::lifecycleStopFencesBlockedReadsAndObservedLossRetiresTheSegment,
+    "battery_blocked_availability_allows_packets_disconnect_and_cancellation" to ::blockedAvailabilityStillAllowsPacketsDisconnectAndCancellation,
 )

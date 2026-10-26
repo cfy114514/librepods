@@ -11,8 +11,12 @@ import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.graphics.Path
@@ -20,16 +24,21 @@ import androidx.compose.ui.graphics.drawscope.Stroke
 import androidx.compose.ui.res.stringResource
 import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.unit.dp
-import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.flow.combine
-import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.flow.flow
 import kotlinx.coroutines.flow.flowOn
+import kotlinx.coroutines.isActive
 import me.kavishdevar.librepods.R
+import me.kavishdevar.librepods.data.BATTERY_SESSION_DISPLAY_INTERVAL_MS
 import me.kavishdevar.librepods.data.BatteryComponent
 import me.kavishdevar.librepods.data.BatterySessionEstimateState
+import me.kavishdevar.librepods.data.BatterySessionObserver
 import me.kavishdevar.librepods.data.BatterySessionSidePresentation
 import me.kavishdevar.librepods.data.BatterySessionSnapshot
 import me.kavishdevar.librepods.data.BatterySessionStore
@@ -39,21 +48,50 @@ import me.kavishdevar.librepods.services.ServiceManager
 /** A lifecycle-scoped display clock expires evidence; it never records battery observations. */
 @Composable
 internal fun BatterySessionCard(address: String, modifier: Modifier = Modifier) {
-    val display = remember(address) {
+    val lifecycle = LocalLifecycleOwner.current.lifecycle
+    val observer = remember(address, lifecycle) { BatterySessionObserver(address) }
+    val empty = remember(address) { batterySessionPresentation(address, BatterySessionSnapshot(), 0) }
+    var state by remember(observer) { mutableStateOf(empty) }
+    val display = remember(observer) {
         val clock = flow {
             while (true) {
                 emit(SystemClock.elapsedRealtime())
-                delay(15_000)
+                delay(BATTERY_SESSION_DISPLAY_INTERVAL_MS)
             }
         }
-        combine(BatterySessionStore.snapshots, clock) { snapshot, _ ->
-            val available = ServiceManager.getService()?.deviceObservationAvailable() == true
-            batterySessionPresentation(address, if (available) snapshot else snapshot.copy(connected = false),
-                SystemClock.elapsedRealtime())
-        }.distinctUntilChanged().flowOn(Dispatchers.Default)
+        observer.presentations(BatterySessionStore.snapshots, clock, SystemClock::elapsedRealtime)
+            .flowOn(Dispatchers.Default)
     }
-    val state by display.collectAsStateWithLifecycle(
-        initialValue = remember(address) { batterySessionPresentation(address, BatterySessionSnapshot(), 0) })
+    DisposableEffect(observer, lifecycle) {
+        val events = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_STOP || event == Lifecycle.Event.ON_DESTROY) {
+                observer.stop()
+                state = empty
+            }
+        }
+        lifecycle.addObserver(events)
+        onDispose { lifecycle.removeObserver(events); observer.close() }
+    }
+    LaunchedEffect(observer, lifecycle) {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            display.collect { state = it }
+        }
+    }
+    LaunchedEffect(observer, lifecycle, "availability") {
+        lifecycle.repeatOnLifecycle(Lifecycle.State.STARTED) {
+            observer.start()
+            try {
+                while (isActive) {
+                    observer.refreshAvailability(SystemClock::elapsedRealtime) {
+                        ServiceManager.getService()?.deviceObservationAvailable() == true
+                    }
+                    delay(BATTERY_SESSION_DISPLAY_INTERVAL_MS)
+                }
+            } finally {
+                observer.stop()
+            }
+        }
+    }
     StyledList(modifier = modifier, title = stringResource(R.string.battery_session_title),
         description = stringResource(R.string.battery_session_description)) {
         item { _, _ ->

@@ -28,6 +28,7 @@ BASE_SOURCES = (
 )
 BATTERY_SOURCES = (
     "data/BatterySession.kt",
+    "data/BatterySessionObserver.kt",
     "data/BatterySessionRepository.kt",
     "data/BatterySessionPresentation.kt",
 )

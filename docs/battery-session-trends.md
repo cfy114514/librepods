@@ -47,7 +47,13 @@ socket, or UI locks.
 the selected address and `AirPodsService.deviceObservationAvailable()`. That
 service helper must retire observations when their physical availability is lost.
 The card's display clock runs only while its lifecycle is started and reevaluates
-expiry at least every 15 seconds. It never inserts observations. The pure
+expiry at least every 15 seconds. Availability is sampled separately on IO, with
+at most one read in flight per observer. A blocked adapter/Binder read cannot stop
+the display clock. Availability expires 30 seconds after the query started, and
+stopping the lifecycle immediately clears it and fences late read results, even
+if the same observer restarts. A slow successful read cannot renew its own age.
+Permission or adapter recovery alone cannot reopen a retired connection segment.
+The display never inserts observations. The pure
 `batterySessionPresentation(address, snapshot, elapsedNowMs)` function also rejects
 stale or future evidence on every call, even without new packets.
 
@@ -98,3 +104,20 @@ These JVM tests exercise the production repository and estimator. They do not
 prove Android lifecycle wiring, UI rendering, firmware reporting or real Bluetooth
 behavior. The normal Android build/lint and the separate receive-path integration
 harness provide additional checks of those software boundaries.
+
+The integration harness also collects the production `BatterySessionObserver`
+flow while a latch holds an injected availability read. It checks independent
+expiry (including its exact boundary), query-start age, single in-flight reads,
+stop/start fencing and recovery after observed connection retirement. Raw charging
+and disconnect updates still reach the display while a query is blocked. Cancelling
+a query does not admit another until its blocking call returns, and closing the
+observer prevents new reads. It does not simulate Android Binder or execute the
+Compose lifecycle adapter.
+
+Run `python3 android/tests/session-health/battery-negative-controls.py` for the
+normal integration suite followed by three compiled, isolated observer mutations:
+omit the display clock, timestamp a slow result at completion, or allow a retired
+lifecycle read to publish. Each must fail its named runtime assertion; a compiler
+error does not count. The runner uses cached Kotlin tools without Gradle or
+downloads. During parallel development it accepts the same `--health-root` and
+`--compiler-lib` overrides as the main integration runner.
