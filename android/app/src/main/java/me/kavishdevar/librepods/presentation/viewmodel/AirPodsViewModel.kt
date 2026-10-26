@@ -573,7 +573,10 @@ class AirPodsViewModel(
     fun setControlCommandValue(
         identifier: ControlCommandIdentifiers, value: ByteArray
     ) {
-        sceneSetting(identifier)?.let { sceneController.supersede(it) }
+        sceneSetting(identifier)?.let {
+            synchronizeSceneContext()
+            sceneController.supersede(it)
+        }
         val ownedValue = value.copyOf()
         if (!isDemoMode) {
             if (identifier == ControlCommandIdentifiers.LISTENING_MODE ||

@@ -26,9 +26,9 @@ roots, Git revisions, dirty state and SHA256 of each source. The compiler receiv
 temporary copies of the exact bytes that were hashed. Compilation output and
 mutations are deleted on exit.
 
-The 27 cases execute actual production implementations of `AACPManager`,
+The 32 cases execute actual production implementations of `AACPManager`,
 `BatterySessionPacketRecorder`, `BatterySessionRepository`, battery presentation,
-`ConnectionHealthMonitor`, `ConnectionHealthObserver`, the public Android platform
+`BatterySessionObserver`, `ConnectionHealthMonitor`, `ConnectionHealthObserver`, the public Android platform
 reader and manual action functions. Their relevant dependencies, including the
 ordinary `BatteryNotification` cache, are also actual sources.
 
@@ -51,6 +51,9 @@ The battery cases cover:
   data. Every retained or presented point maps to an actual receipt. A new
   same-peer connection starts empty, and estimates remain bounded. Known sustained
   drain fixtures check estimates against independent constant-drain projections.
+- A blocked availability read cannot block display aging, charging or disconnect
+  updates. Stop/start fences its late result and admits only one query at a time;
+  availability keeps its query-start timestamp. Cancellation releases its slot.
 
 The health cases cover:
 
@@ -97,3 +100,8 @@ mutations confined to temporary source copies:
 A compiler error is not a passing negative control. Each mutation must fail its
 named assertion. Changed source anchors stop the runner for review rather than
 silently skipping a control.
+
+`python3 android/tests/session-health/battery-negative-controls.py` separately
+checks three compilable observer mutations: omitting display-clock collection,
+renewing availability at query completion, and accepting a retired lifecycle
+read. Each must fail its intended runtime assertion.
